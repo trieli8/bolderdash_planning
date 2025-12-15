@@ -47,6 +47,22 @@ def ensure_executable(path: Path) -> None:
     path.chmod(mode | 0o100)
 
 
+def plan_player_path() -> Path:
+    return repo_root() / "stonesandgem" / "build" / "bin" / "plan_player"
+
+
+def play_plan(plan_file: Path, level_file: Optional[Path]) -> Tuple[int, str, str]:
+    """
+    Invoke the C++ plan_player GUI with a plan file (and optional level).
+    """
+    player = plan_player_path()
+    ensure_executable(player)
+    cmd = [str(player), str(plan_file)]
+    if level_file:
+        cmd.append(str(level_file))
+    return run_cmd_capture(cmd)
+
+
 # -----------------------------
 # Streaming / running commands
 # -----------------------------
@@ -339,18 +355,72 @@ def solve_with_fd(domain: Path, problem: Path, timeout: int | None, optimal: boo
 # CLI main
 # -----------------------------
 
+def generate_problem_from_level(
+    level_txt: Path, problem_name: str
+) -> Tuple[Path, tempfile.TemporaryDirectory]:
+    """
+    Use pddl/problem_gen.py to generate a PDDL problem from a level text file.
+    Returns (pddl_path, tempdir) so caller can keep tempdir alive.
+    """
+    gen_py = repo_root() / "pddl" / "problem_gen.py"
+    if not gen_py.exists():
+        raise FileNotFoundError(f"Missing problem_gen.py at {gen_py}")
+    tmpdir = tempfile.TemporaryDirectory(prefix="gen_problem_")
+    out_path = Path(tmpdir.name) / f"{problem_name}.pddl"
+    cmd = [sys.executable, str(gen_py), str(level_txt), "-p", problem_name]
+    rc, out, err = run_cmd_capture(cmd)
+    if rc != 0:
+        tmpdir.cleanup()
+        raise RuntimeError(f"problem_gen.py failed (rc={rc}): {err or out}")
+    out_path.write_text(out, encoding="utf-8")
+    return out_path, tmpdir
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Run planners and save plans under plan/<problem_name>/")
-    ap.add_argument("--domain", required=True, type=Path)
-    ap.add_argument("--problem", required=True, type=Path)
+    ap = argparse.ArgumentParser(description="Run planners and save plans under plans/<problem_name>/, or play back an existing plan.")
+    ap.add_argument("--domain", type=Path, help="Domain PDDL (required unless using --play-plan)")
+    ap.add_argument("--problem", type=Path, help="Problem PDDL (required unless using --play-plan)")
     ap.add_argument("--planner", choices=["ff", "fd", "both"], default="both")
     ap.add_argument("--timeout", type=int, default=None)
     ap.add_argument("--optimal", action="store_true", help="FD only: attempt optimal planning (alias seq-opt-lmcut)")
     ap.add_argument("--stream", action="store_true", help="Stream planner output live to terminal")
+    ap.add_argument("--play-plan", type=Path, help="Play an existing plan file with the plan_player GUI and exit.")
+    ap.add_argument("--play-level", type=Path, help="Optional level file to pass to plan_player.")
+    ap.add_argument("--play-output", action="store_true", help="After planning, open the first solved plan in plan_player.")
     args = ap.parse_args()
+
+    if args.play_plan:
+        plan_file = args.play_plan.resolve()
+        level_file = args.play_level.resolve() if args.play_level else None
+        try:
+            rc, out, err = play_plan(plan_file, level_file)
+            if out:
+                sys.stdout.write(out)
+            if err:
+                sys.stderr.write(err)
+            return rc
+        except Exception as e:
+            print(f"[ERR] Failed to launch plan_player: {e}", file=sys.stderr)
+            return 1
+
+    if not args.domain or not args.problem:
+        print("Error: --domain and --problem are required unless using --play-plan.", file=sys.stderr)
+        return 2
 
     domain = args.domain.resolve()
     problem = args.problem.resolve()
+
+    # If a level .txt is passed as the "problem", generate a PDDL problem via problem_gen.
+    temp_problem_dir: Optional[tempfile.TemporaryDirectory] = None
+    if problem.suffix.lower() == ".txt":
+        problem_name = problem.stem
+        try:
+            problem, temp_problem_dir = generate_problem_from_level(problem, problem_name)
+            print(f"[INFO] Generated PDDL problem from {args.problem} -> {problem}")
+        except Exception as e:
+            print(f"[ERR] Failed to generate PDDL problem from {problem}: {e}", file=sys.stderr)
+            return 1
+    else:
+        problem_name = normalise_problem_name(problem)
 
     if not domain.exists():
         print(f"Domain file not found: {domain}", file=sys.stderr)
@@ -359,10 +429,13 @@ def main() -> int:
         print(f"Problem file not found: {problem}", file=sys.stderr)
         return 2
 
-    problem_name = normalise_problem_name(problem)
-    out_dir = repo_root() / "plan" / problem_name
+    if problem.suffix.lower() != ".txt":
+        problem_name = normalise_problem_name(problem)
+    out_dir = repo_root() / "plans" / problem_name
 
     results: List[PlanResult] = []
+
+    play_candidates: List[Path] = []
 
     if args.planner in ("ff", "both"):
         r = solve_with_ff(domain, problem, timeout=args.timeout, stream=args.stream)
@@ -372,6 +445,8 @@ def main() -> int:
         write_plan_file(ff_plan_path, r.actions)
         write_text_file(out_dir / "ff.stdout.txt", r.raw_stdout)
         write_text_file(out_dir / "ff.stderr.txt", r.raw_stderr)
+        if r.status == "solved" and r.actions:
+            play_candidates.append(ff_plan_path)
 
     if args.planner in ("fd", "both"):
         r = solve_with_fd(domain, problem, timeout=args.timeout, optimal=args.optimal, stream=args.stream)
@@ -382,6 +457,8 @@ def main() -> int:
         write_plan_file(fd_plan_path, r.actions)
         write_text_file(out_dir / f"{fd_name}.stdout.txt", r.raw_stdout)
         write_text_file(out_dir / f"{fd_name}.stderr.txt", r.raw_stderr)
+        if r.status == "solved" and r.actions:
+            play_candidates.append(fd_plan_path)
 
     # Summary
     print("\n== Summary ==")
@@ -391,7 +468,28 @@ def main() -> int:
             print(f"    fd plan source: {r.metrics['plan_file']}")
 
     print(f"\nPlans saved under: {out_dir}")
-    return 0
+
+    if args.play_output and play_candidates:
+        plan_file = play_candidates[0]
+        level_file = args.play_level.resolve() if args.play_level else None
+        try:
+            print(f"[PLAY] Launching plan_player with {plan_file}" + (f" and level {level_file}" if level_file else ""))
+            rc, out, err = play_plan(plan_file, level_file)
+            if out:
+                sys.stdout.write(out)
+            if err:
+                sys.stderr.write(err)
+            if rc != 0:
+                print(f"[WARN] plan_player exited with code {rc}", file=sys.stderr)
+        except Exception as e:
+            print(f"[WARN] Could not launch plan_player: {e}", file=sys.stderr)
+
+    exit_code = 0
+
+    if temp_problem_dir is not None:
+        temp_problem_dir.cleanup()
+
+    return exit_code
 
 
 if __name__ == "__main__":
