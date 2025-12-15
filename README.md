@@ -198,28 +198,6 @@ python tools/plan.py \
 
 ---
 
-## Why Wrappers?
-
-The Python wrappers provide:
-
-- A **stable interface** independent of planner quirks
-- One place to:
-  - switch planners
-  - normalise action formats
-  - add logging, timeouts, or visualisation
-- Clean integration with the GUI and game logic
-
-Your C++ code or GUI should **never call planners directly** — always call the wrappers.
-
----
-
-## Development Notes
-
-- `stonesandgem/`, `forced-action-ff/`, and `fast-downward/` are **submodules**
-- You can safely modify your **forks** of these without affecting upstream
-- The meta-repo simply pins known-good commits
-
----
 
 ## Typical Workflow
 
@@ -230,3 +208,11 @@ python tools/gui.py --level pddl/levels/level01.txt
 ```
 
 ---
+
+## Level
+0  → Agent
+1  → Empty
+2  → Dirt
+3  → Stone
+5  → Gem
+7  → Brick (wall / solid)

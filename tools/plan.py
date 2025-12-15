@@ -2,35 +2,225 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import List, Tuple
-
-from common import (
-    PlanResult,
-    ensure_executable,
-    parse_sexp_action,
-    repo_root,
-    run_cmd,
-    write_plan_outputs,
-)
+from typing import List, Optional, Tuple, Dict, Any
 
 
-def problem_name_from_path(problem: Path) -> str:
+# -----------------------------
+# Data model
+# -----------------------------
+
+@dataclasses.dataclass
+class PlanResult:
+    planner: str
+    domain: str
+    problem: str
+    status: str  # solved | unsolved | timeout | error
+    actions: List[Tuple[str, List[str]]]
+    raw_stdout: str
+    raw_stderr: str
+    metrics: Dict[str, Any]
+
+
+# -----------------------------
+# Repo helpers
+# -----------------------------
+
+def repo_root() -> Path:
+    # tools/plan.py -> repo root is two levels up
+    return Path(__file__).resolve().parents[1]
+
+
+def ensure_executable(path: Path) -> None:
+    if not path.exists():
+        raise FileNotFoundError(f"Missing executable: {path}")
+    mode = path.stat().st_mode
+    # add u+x
+    path.chmod(mode | 0o100)
+
+
+# -----------------------------
+# Streaming / running commands
+# -----------------------------
+
+def run_cmd_capture(
+    cmd: List[str],
+    cwd: Optional[Path] = None,
+    timeout_sec: Optional[int] = None,
+) -> Tuple[int, str, str]:
+    """
+    Run and capture stdout/stderr. Raises subprocess.TimeoutExpired on timeout.
+    """
+    p = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout_sec,
+    )
+    return p.returncode, p.stdout, p.stderr
+
+
+def run_cmd_stream(
+    cmd: List[str],
+    cwd: Optional[Path] = None,
+    timeout_sec: Optional[int] = None,
+    prefix: str = "",
+) -> Tuple[int, str, str]:
+    """
+    Run and stream output to terminal while also capturing it.
+    Uses combined stdout/stderr for simplicity but returns separated buffers
+    (stderr will be empty, combined goes to stdout buffer).
+    """
+    start = time.time()
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
+    )
+
+    out_lines: List[str] = []
+
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            out_lines.append(line)
+            if prefix:
+                sys.stdout.write(f"{prefix}{line}")
+            else:
+                sys.stdout.write(line)
+            sys.stdout.flush()
+
+            if timeout_sec is not None and (time.time() - start) > timeout_sec:
+                proc.kill()
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout_sec)
+
+        rc = proc.wait()
+        out = "".join(out_lines)
+        return rc, out, ""  # stderr is merged into stdout
+
+    except subprocess.TimeoutExpired:
+        # ensure process is gone
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        raise
+
+
+# -----------------------------
+# Output + parsing helpers
+# -----------------------------
+
+def normalise_problem_name(problem: Path) -> str:
+    """
+    Prefer problem 'PROBNAME' inside the PDDL if present, else file stem.
+    """
+    try:
+        txt = problem.read_text(encoding="utf-8", errors="replace")
+        # (define (problem NAME) ...)
+        m = re.search(r"\(\s*problem\s+([^\s\)]+)\s*\)", txt, flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
     return problem.stem
 
 
-def solve_with_ff(domain: Path, problem: Path, timeout: int | None) -> PlanResult:
+def write_plan_file(path: Path, actions: List[Tuple[str, List[str]]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for (name, args) in actions:
+        if args:
+            lines.append(f"({name} {' '.join(args)})")
+        else:
+            lines.append(f"({name})")
+    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
+def write_text_file(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text or "", encoding="utf-8")
+
+
+def parse_sexp_action(s: str) -> Optional[Tuple[str, List[str]]]:
+    """
+    Parse a single FF action line like:
+      (FORCED__LOAD-TRUCK OBJ23 TRU2 POS2)
+    """
+    s = s.strip()
+    if not (s.startswith("(") and s.endswith(")")):
+        return None
+    inner = s[1:-1].strip()
+    if not inner:
+        return None
+    parts = inner.split()
+    return parts[0], parts[1:]
+
+
+def _find_fd_plan_files(workdir: Path) -> List[Path]:
+    # Typical Fast Downward outputs: sas_plan, sas_plan.1, sas_plan.2 ...
+    patterns = ["sas_plan*", "plan*", "*.plan"]
+    found: List[Path] = []
+    for pat in patterns:
+        for p in workdir.glob(pat):
+            if p.is_file():
+                found.append(p)
+    # dedupe + sort by mtime
+    uniq = {p.resolve(): p for p in found}
+    found = list(uniq.values())
+    found.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0.0)
+    return found
+
+
+def _parse_fd_plan_file(plan_path: Path) -> List[Tuple[str, List[str]]]:
+    """
+    Parse FD plan file (sas_plan*):
+      (move a b)
+    Comments start with ';'
+    """
+    actions: List[Tuple[str, List[str]]] = []
+    if not plan_path.exists():
+        return actions
+
+    for line in plan_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith(";"):
+            continue
+        m = re.match(r"^\(\s*([^\s()]+)(.*?)\)\s*$", line)
+        if not m:
+            continue
+        name = m.group(1)
+        rest = m.group(2).strip()
+        args = rest.split() if rest else []
+        actions.append((name, args))
+    return actions
+
+
+# -----------------------------
+# Planners
+# -----------------------------
+
+def solve_with_ff(domain: Path, problem: Path, timeout: int | None, stream: bool) -> PlanResult:
     root = repo_root()
     ff_bin = root / "planners" / "forced-action-ff" / "ff"
     ensure_executable(ff_bin)
 
-    # FF wants -p <dir> and -o/-f file names. If domain & problem aren't in same dir, copy to temp.
     start = time.time()
+
     with tempfile.TemporaryDirectory(prefix="ff_run_") as td:
         td_path = Path(td)
         dname = "domain.pddl"
@@ -39,10 +229,25 @@ def solve_with_ff(domain: Path, problem: Path, timeout: int | None) -> PlanResul
         shutil.copy2(problem, td_path / pname)
 
         cmd = [str(ff_bin), "-p", str(td_path), "-o", dname, "-f", pname]
-        rc, out, err = run_cmd(cmd, cwd=td_path, timeout_sec=timeout)
+        try:
+            if stream:
+                rc, out, err = run_cmd_stream(cmd, cwd=td_path, timeout_sec=timeout, prefix="[FF] ")
+            else:
+                rc, out, err = run_cmd_capture(cmd, cwd=td_path, timeout_sec=timeout)
+        except subprocess.TimeoutExpired:
+            return PlanResult(
+                planner="ff",
+                domain=str(domain),
+                problem=str(problem),
+                status="timeout",
+                actions=[],
+                raw_stdout="",
+                raw_stderr="",
+                metrics={"returncode": None, "time_sec": round(time.time() - start, 3)},
+            )
 
     actions: List[Tuple[str, List[str]]] = []
-    # Typical FF output has lines like: "0: (ACTION ...)"
+    # FF plan lines are like: "0: (ACTION ...)"
     for line in out.splitlines():
         m = re.match(r"^\s*\d+\s*:\s*(\(.+\))\s*$", line)
         if m:
@@ -63,92 +268,130 @@ def solve_with_ff(domain: Path, problem: Path, timeout: int | None) -> PlanResul
     )
 
 
-def solve_with_fd(domain: Path, problem: Path, timeout: int | None, alias: str) -> PlanResult:
+def solve_with_fd(domain: Path, problem: Path, timeout: int | None, optimal: bool, stream: bool) -> PlanResult:
     root = repo_root()
     fd_py = root / "planners" / "fast-downward" / "fast-downward.py"
     if not fd_py.exists():
-        raise FileNotFoundError(f"Not found: {fd_py}")
+        raise FileNotFoundError(f"Missing Fast Downward entrypoint: {fd_py}")
 
     start = time.time()
+
     with tempfile.TemporaryDirectory(prefix="fd_run_") as td:
         td_path = Path(td)
-        plan_file = td_path / "fd_plan.txt"
 
-        # Fast Downward writes plan to --plan-file; actions are one per line.
-        cmd = [
-            sys.executable,
-            str(fd_py),
-            "--alias", alias,
-            "--plan-file", str(plan_file),
-            str(domain),
-            str(problem),
-        ]
-        rc, out, err = run_cmd(cmd, cwd=td_path, timeout_sec=timeout)
+        if optimal:
+            # Optimal: rely on alias if supported by this FD version.
+            cmd = [sys.executable, str(fd_py), str(domain), str(problem), "--alias", "seq-opt-lmcut"]
+            tag = "fd-opt"
+        else:
+            # Satisficing: stop after first found plan.
+            cmd = [sys.executable, str(fd_py), str(domain), str(problem),
+                   "--search", "lazy_greedy([ff()], preferred=[ff()])"]
+            tag = "fd"
 
-        actions: List[Tuple[str, List[str]]] = []
-        if plan_file.exists():
-            for line in plan_file.read_text(encoding="utf-8", errors="replace").splitlines():
-                line = line.strip()
-                if not line or line.startswith(";"):
-                    continue
-                parsed = parse_sexp_action(line)
-                if parsed:
-                    actions.append(parsed)
+        print("Running FD with command:", " ".join(cmd))
 
-    status = "solved" if actions else ("unsolved" if rc == 0 else "error")
-    return PlanResult(
-        planner="fd",
-        domain=str(domain),
-        problem=str(problem),
-        status=status,
-        actions=actions,
-        raw_stdout=out,
-        raw_stderr=err,
-        metrics={"returncode": rc, "time_sec": round(time.time() - start, 3), "alias": alias},
-    )
+        try:
+            if stream:
+                rc, out, err = run_cmd_stream(cmd, cwd=td_path, timeout_sec=timeout, prefix="[FD] ")
+            else:
+                rc, out, err = run_cmd_capture(cmd, cwd=td_path, timeout_sec=timeout)
+        except subprocess.TimeoutExpired:
+            plan_files = _find_fd_plan_files(td_path)
+            actions = _parse_fd_plan_file(plan_files[-1]) if plan_files else []
+            return PlanResult(
+                planner=tag,
+                domain=str(domain),
+                problem=str(problem),
+                status="timeout",
+                actions=actions,
+                raw_stdout="",
+                raw_stderr="",
+                metrics={
+                    "returncode": None,
+                    "time_sec": round(time.time() - start, 3),
+                    "plan_file": str(plan_files[-1]) if plan_files else None,
+                },
+            )
 
+        plan_files = _find_fd_plan_files(td_path)
+        actions = _parse_fd_plan_file(plan_files[-1]) if plan_files else []
+        status = "solved" if actions else ("unsolved" if rc == 0 else "error")
+
+        return PlanResult(
+            planner=tag,
+            domain=str(domain),
+            problem=str(problem),
+            status=status,
+            actions=actions,
+            raw_stdout=out,
+            raw_stderr=err,
+            metrics={
+                "returncode": rc,
+                "time_sec": round(time.time() - start, 3),
+                "plan_file": str(plan_files[-1]) if plan_files else None,
+                "num_plan_files": len(plan_files),
+            },
+        )
+
+
+# -----------------------------
+# CLI main
+# -----------------------------
 
 def main() -> int:
-    ap = argparse.ArgumentParser(
-        description="Run a planner (FF or Fast Downward) and write outputs to plans/<problem_name>/ (default: both JSON + text)."
-    )
-    ap.add_argument("--planner", choices=["ff", "fd", "auto"], default="auto")
+    ap = argparse.ArgumentParser(description="Run planners and save plans under plan/<problem_name>/")
     ap.add_argument("--domain", required=True, type=Path)
     ap.add_argument("--problem", required=True, type=Path)
-    ap.add_argument("--timeout", type=int, default=None, help="seconds")
-    ap.add_argument("--fd-alias", default="seq-sat-lama-2011", help="Fast Downward alias")
-    ap.add_argument("--out-root", type=Path, default=repo_root() / "plans")
-
+    ap.add_argument("--planner", choices=["ff", "fd", "both"], default="both")
+    ap.add_argument("--timeout", type=int, default=None)
+    ap.add_argument("--optimal", action="store_true", help="FD only: attempt optimal planning (alias seq-opt-lmcut)")
+    ap.add_argument("--stream", action="store_true", help="Stream planner output live to terminal")
     args = ap.parse_args()
+
     domain = args.domain.resolve()
     problem = args.problem.resolve()
 
-    out_dir = (args.out_root / problem_name_from_path(problem)).resolve()
+    if not domain.exists():
+        print(f"Domain file not found: {domain}", file=sys.stderr)
+        return 2
+    if not problem.exists():
+        print(f"Problem file not found: {problem}", file=sys.stderr)
+        return 2
 
-    try:
-        if args.planner == "ff":
-            res = solve_with_ff(domain, problem, args.timeout)
-        elif args.planner == "fd":
-            res = solve_with_fd(domain, problem, args.timeout, args.fd_alias)
-        else:
-            # auto: try FF then FD
-            res = solve_with_ff(domain, problem, args.timeout)
-            if res.status != "solved":
-                res = solve_with_fd(domain, problem, args.timeout, args.fd_alias)
+    problem_name = normalise_problem_name(problem)
+    out_dir = repo_root() / "plan" / problem_name
 
-        write_plan_outputs(out_dir, res)
+    results: List[PlanResult] = []
 
-        print(f"[OK] planner={res.planner} status={res.status} actions={len(res.actions)}")
-        print(f"     wrote: {out_dir / 'plan.txt'}")
-        print(f"     wrote: {out_dir / 'plan.json'}")
-        return 0 if res.status == "solved" else 2
+    if args.planner in ("ff", "both"):
+        r = solve_with_ff(domain, problem, timeout=args.timeout, stream=args.stream)
+        results.append(r)
 
-    except Exception as e:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "error.log").write_text(str(e) + "\n", encoding="utf-8")
-        print(f"[ERR] {e}")
-        print(f"      (details written to {out_dir / 'error.log'})")
-        return 1
+        ff_plan_path = out_dir / "ff.plan"
+        write_plan_file(ff_plan_path, r.actions)
+        write_text_file(out_dir / "ff.stdout.txt", r.raw_stdout)
+        write_text_file(out_dir / "ff.stderr.txt", r.raw_stderr)
+
+    if args.planner in ("fd", "both"):
+        r = solve_with_fd(domain, problem, timeout=args.timeout, optimal=args.optimal, stream=args.stream)
+        results.append(r)
+
+        fd_name = "fd-opt" if args.optimal else "fd"
+        fd_plan_path = out_dir / f"{fd_name}.plan"
+        write_plan_file(fd_plan_path, r.actions)
+        write_text_file(out_dir / f"{fd_name}.stdout.txt", r.raw_stdout)
+        write_text_file(out_dir / f"{fd_name}.stderr.txt", r.raw_stderr)
+
+    # Summary
+    print("\n== Summary ==")
+    for r in results:
+        print(f"- {r.planner}: {r.status}  (actions={len(r.actions)})  time={r.metrics.get('time_sec')}s")
+        if "plan_file" in r.metrics and r.metrics["plan_file"]:
+            print(f"    fd plan source: {r.metrics['plan_file']}")
+
+    print(f"\nPlans saved under: {out_dir}")
+    return 0
 
 
 if __name__ == "__main__":
