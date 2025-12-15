@@ -1,0 +1,11 @@
+# Ignore generated/temporary plan outputs
+plans/
+
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
+.pytest_cache/
+.mypy_cache/
