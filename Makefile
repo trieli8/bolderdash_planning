@@ -43,11 +43,10 @@ clean:
 	@echo "==> Cleaning Stones & Gems"
 	-rm -rf $(GAME_DIR)/build
 
+distclean: clean
 	@echo "==> Cleaning Forced-Action FF"
 	-$(MAKE) -C $(FF_DIR) clean
 
-
-distclean: clean
 	@echo "==> Removing FD build directory"
 	-rm -rf $(FD_DIR)/build
 
