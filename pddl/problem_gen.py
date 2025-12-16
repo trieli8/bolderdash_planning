@@ -291,7 +291,7 @@ def main():
 
     # Also persist to <problem_name>.pddl in the current working directory
     try:
-        out_path = Path(f"{args.problem_name}.pddl")
+        out_path = Path(f"pddl/{args.problem_name}.pddl")
         out_path.write_text(pddl, encoding="utf-8")
     except Exception as e:
         sys.stderr.write(f"Warning: failed to write {args.problem_name}.pddl: {e}\n")
