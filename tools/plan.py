@@ -167,6 +167,51 @@ def write_plan_file(path: Path, actions: List[Tuple[str, List[str]]]) -> None:
     path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
+def _dir_from_coords(src: str, dst: str) -> Optional[str]:
+    m1 = re.match(r"c_(\d+)_(\d+)", src)
+    m2 = re.match(r"c_(\d+)_(\d+)", dst)
+    if not (m1 and m2):
+        return None
+    r1, c1 = int(m1.group(1)), int(m1.group(2))
+    r2, c2 = int(m2.group(1)), int(m2.group(2))
+    dr, dc = r2 - r1, c2 - c1
+    if dr == -1 and dc == 0:
+        return "up"
+    if dr == 1 and dc == 0:
+        return "down"
+    if dr == 0 and dc == -1:
+        return "left"
+    if dr == 0 and dc == 1:
+        return "right"
+    return None
+
+
+def write_direction_plan(path: Path, actions: List[Tuple[str, List[str]]]) -> None:
+    """
+    Write a plan in the simple token format that plan_player understands.
+    Looks for actions with coordinates like c_r_c and converts to up/down/left/right.
+    """
+    tokens: List[str] = []
+    for name, args in actions:
+        if len(args) >= 3:
+            direction = _dir_from_coords(args[1], args[2])
+            if direction:
+                tokens.append(direction)
+                continue
+        # fallback: use action name keywords
+        lname = name.lower()
+        if "up" in lname:
+            tokens.append("up")
+        elif "down" in lname:
+            tokens.append("down")
+        elif "left" in lname:
+            tokens.append("left")
+        elif "right" in lname:
+            tokens.append("right")
+    if tokens:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(f"({t})" for t in tokens) + "\n", encoding="utf-8")
+
 def write_text_file(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text or "", encoding="utf-8")
@@ -243,8 +288,10 @@ def solve_with_ff(domain: Path, problem: Path, timeout: int | None, stream: bool
         pname = "problem.pddl"
         shutil.copy2(domain, td_path / dname)
         shutil.copy2(problem, td_path / pname)
+        
+        pdir = str(td_path) + os.sep  # IMPORTANT: FF concatenates -p + filename
+        cmd = [str(ff_bin), "-p", pdir, "-o", dname, "-f", pname]
 
-        cmd = [str(ff_bin), "-p", str(td_path), "-o", dname, "-f", pname]
         try:
             if stream:
                 rc, out, err = run_cmd_stream(cmd, cwd=td_path, timeout_sec=timeout, prefix="[FF] ")
@@ -262,16 +309,43 @@ def solve_with_ff(domain: Path, problem: Path, timeout: int | None, stream: bool
                 metrics={"returncode": None, "time_sec": round(time.time() - start, 3)},
             )
 
-    actions: List[Tuple[str, List[str]]] = []
-    # FF plan lines are like: "0: (ACTION ...)"
-    for line in out.splitlines():
-        m = re.match(r"^\s*\d+\s*:\s*(\(.+\))\s*$", line)
-        if m:
-            parsed = parse_sexp_action(m.group(1))
-            if parsed:
-                actions.append(parsed)
+        actions: List[Tuple[str, List[str]]] = []
+
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+
+            # Format A: "0: (ACTION ...)"
+            m = re.match(r"^\s*\d+\s*:\s*(\(.+\))\s*$", line)
+            if m:
+                parsed = parse_sexp_action(m.group(1))
+                if parsed:
+                    actions.append(parsed)
+                continue
+
+            # Format B: "step 0: ACTION ARG1 ARG2 ..."
+            m2 = re.match(r"^(?:step\s*)?\d+\s*:\s*([A-Za-z0-9_+-]+)(?:\s+(.*))?$", line, re.IGNORECASE)
+            if m2:
+                name = m2.group(1).lower()
+                rest = (m2.group(2) or "").strip()
+                args = rest.split() if rest else []
+                actions.append((name, args))
+                continue
+
+            # Format C: "step    0: ACTION ..." (extra spacing)
+            m3 = re.match(r"^step\s+\d+\s*:\s*([A-Za-z0-9_+-]+)(?:\s+(.*))?$", line, re.IGNORECASE)
+            if m3:
+                name = m3.group(1).lower()
+                rest = (m3.group(2) or "").strip()
+                args = rest.split() if rest else []
+                actions.append((name, args))
+                continue
 
     status = "solved" if actions else ("unsolved" if rc == 0 else "error")
+    if "found legal plan" in out.lower():
+        status = "solved"
+
     return PlanResult(
         planner="ff",
         domain=str(domain),
@@ -296,8 +370,8 @@ def solve_with_fd(domain: Path, problem: Path, timeout: int | None, optimal: boo
         td_path = Path(td)
 
         if optimal:
-            # Optimal: rely on alias if supported by this FD version.
-            cmd = [sys.executable, str(fd_py), str(domain), str(problem), "--alias", "seq-opt-lmcut"]
+            # Optimal: rely on alias if supported by this FD version. Alias must come before domain/problem.
+            cmd = [sys.executable, str(fd_py), "--alias", "seq-opt-lmcut", str(domain), str(problem)]
             tag = "fd-opt"
         else:
             # Satisficing: stop after first found plan.
@@ -305,7 +379,6 @@ def solve_with_fd(domain: Path, problem: Path, timeout: int | None, optimal: boo
                    "--search", "lazy_greedy([ff()], preferred=[ff()])"]
             tag = "fd"
 
-        print("Running FD with command:", " ".join(cmd))
 
         try:
             if stream:
@@ -379,7 +452,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Run planners and save plans under plans/<problem_name>/, or play back an existing plan.")
     ap.add_argument("--domain", type=Path, help="Domain PDDL (required unless using --play-plan)")
     ap.add_argument("--problem", type=Path, help="Problem PDDL (required unless using --play-plan)")
-    ap.add_argument("--planner", choices=["ff", "fd", "both"], default="both")
+    ap.add_argument("--planner", choices=["ff", "fd", "both"], default="fd")
     ap.add_argument("--timeout", type=int, default=None)
     ap.add_argument("--optimal", action="store_true", help="FD only: attempt optimal planning (alias seq-opt-lmcut)")
     ap.add_argument("--stream", action="store_true", help="Stream planner output live to terminal")
@@ -443,6 +516,8 @@ def main() -> int:
 
         ff_plan_path = out_dir / "ff.plan"
         write_plan_file(ff_plan_path, r.actions)
+        if r.actions:
+            write_direction_plan(out_dir / "ff.play.plan", r.actions)
         write_text_file(out_dir / "ff.stdout.txt", r.raw_stdout)
         write_text_file(out_dir / "ff.stderr.txt", r.raw_stderr)
         if r.status == "solved" and r.actions:
@@ -455,6 +530,8 @@ def main() -> int:
         fd_name = "fd-opt" if args.optimal else "fd"
         fd_plan_path = out_dir / f"{fd_name}.plan"
         write_plan_file(fd_plan_path, r.actions)
+        if r.actions:
+            write_direction_plan(out_dir / f"{fd_name}.play.plan", r.actions)
         write_text_file(out_dir / f"{fd_name}.stdout.txt", r.raw_stdout)
         write_text_file(out_dir / f"{fd_name}.stderr.txt", r.raw_stderr)
         if r.status == "solved" and r.actions:

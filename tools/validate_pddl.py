@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""
+Compare PDDL simulation (via Fast Downward translate/SAS) against native stonesngems trace.
+
+Usage:
+  python tools/validate_pddl.py --domain pddl/domain.pddl --problem pddl/level01.pddl \
+      --plan plans/level-1/fd-opt.plan --native-trace native_trace.jsonl
+
+Steps:
+  - Run FD translator to get SAS.
+  - Parse plan actions and SAS operators; simulate to build a PDDL trace.
+  - Load native trace (from stones_trace) and compare agent/gem/stone/dirt positions per step.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Tuple, Dict, Optional, Iterable, Set
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+# -------------------- Plan parsing --------------------
+
+def parse_sexp_action(line: str) -> Optional[Tuple[str, List[str]]]:
+    line = line.strip()
+    m = re.search(r"\(\s*([^\s()]+)\s*([^()]*)\)", line)
+    if not m:
+        return None
+    name = m.group(1).strip()
+    rest = m.group(2).strip()
+    args = [tok for tok in rest.split() if tok]
+    return name.lower(), [a.lower() for a in args]
+
+
+def read_plan(plan_path: Path) -> List[Tuple[str, List[str]]]:
+    actions: List[Tuple[str, List[str]]] = []
+    for raw in plan_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        raw = raw.strip()
+        if not raw or raw.startswith(";"):
+            continue
+        parsed = parse_sexp_action(raw)
+        if parsed:
+            actions.append(parsed)
+    return actions
+
+
+# -------------------- SAS parsing --------------------
+
+@dataclass
+class SASVar:
+    name: str
+    atoms: List[str]  # length = domain size (excluding <none>)
+
+
+@dataclass
+class SASOp:
+    name_tokens: List[str]
+    pre: List[Tuple[int, int]]
+    eff: List[Tuple[int, int]]
+
+    @property
+    def key(self) -> Tuple[str, Tuple[str, ...]]:
+        if not self.name_tokens:
+            return "", ()
+        return self.name_tokens[0].lower(), tuple(t.lower() for t in self.name_tokens[1:])
+
+
+def run_translate(domain: Path, problem: Path, timeout: Optional[int]) -> str:
+    fd_py = repo_root() / "planners" / "fast-downward" / "fast-downward.py"
+    if not fd_py.exists():
+        raise FileNotFoundError(f"fast-downward.py not found at {fd_py}")
+    with tempfile.TemporaryDirectory(prefix="fd_translate_") as td:
+        sas_file = Path(td) / "output.sas"
+        cmd = [sys.executable, str(fd_py), "--translate", str(domain), str(problem), "--sas-file", str(sas_file)]
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                cwd=td,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.CalledProcessError as e:
+            sys.stderr.write(f"[ERR] FD translate failed (rc={e.returncode})\n")
+            if e.stdout:
+                sys.stderr.write(e.stdout)
+            if e.stderr:
+                sys.stderr.write(e.stderr)
+            raise
+        return sas_file.read_text(encoding="utf-8", errors="replace")
+
+
+def parse_sas(sas_text: str) -> Tuple[List[SASVar], List[int], List[SASOp]]:
+    lines = [ln.strip() for ln in sas_text.splitlines() if ln.strip() != ""]
+    it = iter(lines)
+
+    # Header: begin_version, <num>, end_version, begin_metric, <num>, end_metric
+    if next(it, "") != "begin_version":
+        raise ValueError("SAS parse: expected begin_version")
+    next(it, None)  # version number
+    if next(it, "") != "end_version":
+        raise ValueError("SAS parse: expected end_version")
+    if next(it, "") != "begin_metric":
+        raise ValueError("SAS parse: expected begin_metric")
+    next(it, None)  # metric value
+    if next(it, "") != "end_metric":
+        raise ValueError("SAS parse: expected end_metric")
+
+    var_count = int(next(it, "0"))
+    vars_out: List[SASVar] = []
+    for _ in range(var_count):
+        assert next(it, "") == "begin_variable"
+        name = next(it, "").strip()
+        next(it, None)  # axiom layer
+        domain_size = int(next(it, "0"))
+        atoms: List[str] = []
+        for _ in range(domain_size):
+            atom_line = next(it, "").strip()
+            atoms.append(atom_line)
+        assert next(it, "") == "end_variable"
+        vars_out.append(SASVar(name=name, atoms=atoms))
+
+    mutex_count = int(next(it, "0"))
+    for _ in range(mutex_count):
+        while True:
+            line = next(it, None)
+            if line is None or line.strip() == "end_mutex_group":
+                break
+
+    assert next(it, "") == "begin_state"
+    init_state: List[int] = []
+    for _ in range(var_count):
+        init_state.append(int(next(it, "0").strip()))
+    assert next(it, "") == "end_state"
+
+    # goal skip
+    assert next(it, "") == "begin_goal"
+    goal_n = int(next(it, "0"))
+    for _ in range(goal_n):
+        next(it, None)
+    assert next(it, "") == "end_goal"
+
+    op_count = int(next(it, "0"))
+    ops: List[SASOp] = []
+    for _ in range(op_count):
+        if next(it, "") != "begin_operator":
+            break
+        name_line = next(it, "").strip()
+        name_tokens = name_line.replace("(", "").replace(")", "").split()
+
+        prevails = int(next(it, "0"))
+        pre: List[Tuple[int, int]] = []
+        for _ in range(prevails):
+            v, val = next(it, "0 0").split()
+            pre.append((int(v), int(val)))
+
+        pe_count = int(next(it, "0"))
+        eff: List[Tuple[int, int]] = []
+        for _ in range(pe_count):
+            parts = next(it, "").split()
+            if not parts:
+                continue
+            idx = 0
+            num_conds = int(parts[idx]); idx += 1
+            conds: List[Tuple[int, int]] = []
+            for _ in range(num_conds):
+                if idx + 1 >= len(parts):
+                    break
+                c_var = int(parts[idx]); c_val = int(parts[idx + 1])
+                conds.append((c_var, c_val))
+                idx += 2
+            if idx + 2 >= len(parts):
+                continue
+            v = int(parts[idx]); old = int(parts[idx + 1]); new = int(parts[idx + 2])
+            if old != -1:
+                pre.append((v, old))
+            pre.extend(conds)
+            eff.append((v, new))
+        next(it, None)  # cost
+        next(it, None)  # end_operator
+        ops.append(SASOp(name_tokens, pre, eff))
+
+    return vars_out, init_state, ops
+
+
+def normalise_problem_name(problem: Path) -> str:
+    try:
+        txt = problem.read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"\(\s*problem\s+([^\s\)]+)\s*\)", txt, flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return problem.stem
+
+
+# -------------------- Simulation --------------------
+
+def applicable(op: SASOp, state: List[int]) -> bool:
+    return all(state[v] == val for v, val in op.pre)
+
+
+def apply(op: SASOp, state: List[int]) -> None:
+    for v, val in op.eff:
+        state[v] = val
+
+
+def build_op_map(ops: List[SASOp]) -> Dict[Tuple[str, Tuple[str, ...]], SASOp]:
+    return {op.key: op for op in ops}
+
+
+def extract_state_atoms(vars_out: List[SASVar], state: List[int]) -> List[str]:
+    atoms: List[str] = []
+    for var, val in zip(vars_out, state):
+        if val < 0 or val >= len(var.atoms):
+            continue
+        atoms.append(var.atoms[val])
+    return atoms
+
+
+def cells_from_atoms(atoms: Iterable[str]) -> Tuple[Optional[int], Set[int], Set[int], Set[int], int, int]:
+    agent: Optional[int] = None
+    gems: Set[int] = set()
+    stones: Set[int] = set()
+    dirt: Set[int] = set()
+    max_r = -1
+    max_c = -1
+
+    cell_re = re.compile(r"c_(\d+)_(\d+)")
+
+    for atom in atoms:
+        # atom lines look like "Atom agent-at(c_0_0)" or "Atom stone(c_1_2)"
+        lower = atom.lower()
+        m = cell_re.search(lower)
+        if not m:
+            continue
+        r = int(m.group(1)); c = int(m.group(2))
+        max_r = max(max_r, r); max_c = max(max_c, c)
+        idx = r * (max_c + 1) + c  # temporary; final cols computed after loop
+        if "agent-at" in lower:
+            agent = idx
+        elif "gem" in lower:
+            gems.add(idx)
+        elif "stone" in lower:
+            stones.add(idx)
+        elif "dirt" in lower:
+            dirt.add(idx)
+
+    cols = max_c + 1 if max_c >= 0 else 0
+    rows = max_r + 1 if max_r >= 0 else 0
+
+    # Recompute indexes with correct cols
+    agent_idx = None
+    if agent is not None and cols:
+        r = agent // cols
+        c = agent % cols
+        agent_idx = r * cols + c
+
+    def remap(s: Set[int]) -> Set[int]:
+        if cols == 0:
+            return set()
+        out = set()
+        for v in s:
+            r = v // (max_c + 1)
+            c = v % (max_c + 1)
+            out.add(r * cols + c)
+        return out
+
+    return agent_idx, remap(gems), remap(stones), remap(dirt), rows, cols
+
+
+# -------------------- Native trace --------------------
+
+@dataclass
+class NativeStep:
+    action: str
+    agent: int
+    gems: Set[int]
+    stones: Set[int]
+    dirt: Set[int]
+
+
+def load_native_trace(path: Path) -> List[NativeStep]:
+    steps: List[NativeStep] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        data = json.loads(line)
+        steps.append(
+            NativeStep(
+                action=data.get("action", ""),
+                agent=int(data["agent"]),
+                gems=set(int(x) for x in data.get("gems", [])),
+                stones=set(int(x) for x in data.get("stones", [])),
+                dirt=set(int(x) for x in data.get("dirt", [])),
+            )
+        )
+    return steps
+
+
+def run_stones_trace(plan: Path, level: Path, timeout: Optional[int]) -> List[NativeStep]:
+    tracer = repo_root() / "stonesandgem" / "build" / "bin" / "stones_trace"
+    if not tracer.exists():
+        raise FileNotFoundError(f"stones_trace not found at {tracer} (build with: cmake --build stonesandgem/build --target stones_trace)")
+    with tempfile.TemporaryDirectory(prefix="trace_tmp_") as td:
+        trace_path = Path(td) / "trace.jsonl"
+        cmd = [str(tracer), str(plan), str(level)]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+        if proc.returncode != 0:
+            sys.stderr.write(f"[ERR] stones_trace failed (rc={proc.returncode})\n")
+            sys.stderr.write(proc.stdout or "")
+            sys.stderr.write(proc.stderr or "")
+            raise RuntimeError("stones_trace failed")
+        trace_path.write_text(proc.stdout, encoding="utf-8")
+        return load_native_trace(trace_path)
+
+
+# -------------------- Comparison --------------------
+
+def compare_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]]) -> int:
+    mismatches = 0
+    length = min(len(native), len(pddl_trace))
+    for i in range(length):
+        n = native[i]
+        agent, gems, stones, dirt = pddl_trace[i]
+        errs = []
+        if n.agent != agent:
+            errs.append(f"agent {n.agent} != {agent}")
+        if n.gems != gems:
+            errs.append(f"gems {sorted(n.gems)} != {sorted(gems)}")
+        if n.stones != stones:
+            errs.append(f"stones {sorted(n.stones)} != {sorted(stones)}")
+        if n.dirt != dirt:
+            errs.append(f"dirt {sorted(n.dirt)} != {sorted(dirt)}")
+        if errs:
+            print(f"[MISMATCH] step {i}: " + "; ".join(errs))
+            mismatches += 1
+    if len(native) != len(pddl_trace):
+        print(f"[MISMATCH] trace length native={len(native)} pddl={len(pddl_trace)}")
+        mismatches += 1
+    if mismatches == 0:
+        print("[OK] traces match")
+    return mismatches
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Compare stonesngems native trace vs PDDL simulation step-by-step.")
+    ap.add_argument("--domain", type=Path, default=repo_root() / "pddl" / "domain.pddl",
+                    help="Domain PDDL (default: pddl/domain.pddl)")
+    ap.add_argument("--problem", required=True, type=Path, help="Problem PDDL or level txt")
+    ap.add_argument("--plan", type=Path, help="Plan in S-expression (e.g., fd-opt.plan). If omitted, FD will generate one.")
+    ap.add_argument("--native-trace", type=Path, help="Trace from stones_trace (JSONL). If omitted, stones_trace will be run in-memory using the plan.")
+    ap.add_argument("--timeout", type=int, default=None, help="Translate timeout (seconds)")
+    args = ap.parse_args()
+
+    domain = args.domain.resolve()
+    problem = args.problem.resolve()
+
+    plan_path: Optional[Path] = args.plan.resolve() if args.plan else None
+
+    if plan_path is None:
+        # Auto-generate plan using tools/plan.py with FD
+        out_root = Path(tempfile.mkdtemp(prefix="cmp_plan_"))
+        problem_name = normalise_problem_name(problem)
+        gen_cmd = [
+            sys.executable,
+            str(repo_root() / "tools" / "plan.py"),
+            "--planner", "fd",
+            "--domain", str(domain),
+            "--problem", str(problem),
+            "--out-root", str(out_root),
+        ]
+        print(f"[INFO] Generating plan via Fast Downward: {' '.join(gen_cmd)}")
+        rc = subprocess.run(gen_cmd, text=True, capture_output=True)
+        if rc.returncode != 0:
+            sys.stderr.write(f"[ERR] Failed to generate plan (rc={rc.returncode})\n")
+            sys.stderr.write(rc.stdout or "")
+            sys.stderr.write(rc.stderr or "")
+            return 1
+        plan_path = out_root / problem_name / "fd.plan"
+        if not plan_path.exists():
+            sys.stderr.write(f"[ERR] Generated plan not found at {plan_path}\n")
+            return 1
+
+    sas_text = run_translate(domain, problem, args.timeout)
+    vars_out, init_state, ops = parse_sas(sas_text)
+    op_map = build_op_map(ops)
+    plan_actions = read_plan(plan_path)
+
+    state = list(init_state)
+    pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]] = []
+    atoms = extract_state_atoms(vars_out, state)
+    agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
+    pddl_trace.append((agent or -1, gems, stones, dirt))
+
+    for (name, args_list) in plan_actions:
+        op = op_map.get((name, tuple(args_list)))
+        if not op:
+            print(f"[ERR] Missing operator for action: {name} {' '.join(args_list)}")
+            return 1
+        if not applicable(op, state):
+            print(f"[ERR] Inapplicable action: {name} {' '.join(args_list)}")
+            return 1
+        apply(op, state)
+        atoms = extract_state_atoms(vars_out, state)
+        agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
+        pddl_trace.append((agent or -1, gems, stones, dirt))
+
+    if args.native_trace:
+        native_steps = load_native_trace(args.native_trace.resolve())
+    else:
+        native_steps = run_stones_trace(plan_path, problem, args.timeout)
+    mismatches = compare_traces(native_steps, pddl_trace)
+    return 0 if mismatches == 0 else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
