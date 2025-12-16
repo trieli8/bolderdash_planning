@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Optional, Iterable, Set
 
 
+
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -309,21 +310,70 @@ def load_native_trace(path: Path) -> List[NativeStep]:
     return steps
 
 
+def parse_native_trace_text(text: str) -> List[NativeStep]:
+    steps: List[NativeStep] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        data = json.loads(line)
+        steps.append(
+            NativeStep(
+                action=data.get("action", ""),
+                agent=int(data["agent"]),
+                gems=set(int(x) for x in data.get("gems", [])),
+                stones=set(int(x) for x in data.get("stones", [])),
+                dirt=set(int(x) for x in data.get("dirt", [])),
+            )
+        )
+    return steps
+
+
+def dump_native_trace(path: Path, steps: List[NativeStep]) -> None:
+    lines = []
+    for s in steps:
+        lines.append(json.dumps({
+            "action": s.action,
+            "agent": s.agent,
+            "gems": sorted(s.gems),
+            "stones": sorted(s.stones),
+            "dirt": sorted(s.dirt),
+        }))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def run_stones_trace(plan: Path, level: Path, timeout: Optional[int]) -> List[NativeStep]:
     tracer = repo_root() / "stonesandgem" / "build" / "bin" / "stones_trace"
     if not tracer.exists():
         raise FileNotFoundError(f"stones_trace not found at {tracer} (build with: cmake --build stonesandgem/build --target stones_trace)")
-    with tempfile.TemporaryDirectory(prefix="trace_tmp_") as td:
-        trace_path = Path(td) / "trace.jsonl"
-        cmd = [str(tracer), str(plan), str(level)]
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
-        if proc.returncode != 0:
-            sys.stderr.write(f"[ERR] stones_trace failed (rc={proc.returncode})\n")
-            sys.stderr.write(proc.stdout or "")
-            sys.stderr.write(proc.stderr or "")
-            raise RuntimeError("stones_trace failed")
-        trace_path.write_text(proc.stdout, encoding="utf-8")
-        return load_native_trace(trace_path)
+    cmd = [str(tracer), str(plan), str(level)]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        sys.stderr.write(f"[ERR] stones_trace failed (rc={proc.returncode})\n")
+        sys.stderr.write(proc.stdout or "")
+        sys.stderr.write(proc.stderr or "")
+        raise RuntimeError("stones_trace failed")
+    return parse_native_trace_text(proc.stdout)
+
+
+def launch_trace_viewer(native: List[NativeStep],
+                        pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]],
+                        actions: List[Tuple[str, List[str]]],
+                        level_path: Path) -> None:
+    viewer = repo_root() / "stonesandgem" / "build" / "bin" / "trace_viewer"
+    if not viewer.exists():
+        print(f"[WARN] trace_viewer not found at {viewer} (build with: cmake --build stonesandgem/build --target trace_viewer)")
+        return
+    with tempfile.TemporaryDirectory(prefix="trace_viewer_") as td:
+        native_path = Path(td) / "native.jsonl"
+        pddl_path = Path(td) / "pddl.jsonl"
+        dump_native_trace(native_path, native)
+        dump_pddl_trace(pddl_path, actions, pddl_trace)
+        cmd = [str(viewer), str(native_path), str(pddl_path), str(level_path)]
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"[WARN] trace_viewer exited with code {e.returncode}")
 
 
 # -------------------- Comparison --------------------
@@ -354,6 +404,20 @@ def compare_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int
     return mismatches
 
 
+def dump_pddl_trace(path: Path, actions: List[Tuple[str, List[str]]], trace: List[Tuple[int, Set[int], Set[int], Set[int]]]) -> None:
+    lines = []
+    for (act, (agent, gems, stones, dirt)) in zip(["init"] + [f"{n} {' '.join(a)}" for n, a in actions], trace):
+        lines.append(json.dumps({
+            "action": act,
+            "agent": agent,
+            "gems": sorted(gems),
+            "stones": sorted(stones),
+            "dirt": sorted(dirt),
+        }))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Compare stonesngems native trace vs PDDL simulation step-by-step.")
     ap.add_argument("--domain", type=Path, default=repo_root() / "pddl" / "domain.pddl",
@@ -361,6 +425,8 @@ def main() -> int:
     ap.add_argument("--problem", required=True, type=Path, help="Problem PDDL or level txt (used for both planning and stones_trace)")
     ap.add_argument("--plan", type=Path, help="Plan in S-expression (e.g., fd-opt.plan). If omitted, FD will generate one.")
     ap.add_argument("--native-trace", type=Path, help="Trace from stones_trace (JSONL). If omitted, stones_trace will be run in-memory using the plan.")
+    ap.add_argument("--pddl-trace-out", type=Path, help="Optional path to write the simulated PDDL trace as JSONL for external viewers.")
+    ap.add_argument("--view", action="store_true", help="Open a simple GUI to view native vs PDDL states side-by-side.")
     ap.add_argument("--timeout", type=int, default=None, help="Translate timeout (seconds)")
     args = ap.parse_args()
 
@@ -494,6 +560,13 @@ def main() -> int:
     else:
         native_steps = run_stones_trace(play_plan_path, level_path, args.timeout)
     mismatches = compare_traces(native_steps, pddl_trace)
+
+    if args.pddl_trace_out:
+        dump_pddl_trace(args.pddl_trace_out, plan_actions, pddl_trace)
+
+    if args.view:
+        launch_trace_viewer(native_steps, pddl_trace, plan_actions, level_path)
+
     return 0 if mismatches == 0 else 2
 
 
