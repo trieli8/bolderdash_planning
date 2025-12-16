@@ -358,20 +358,51 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Compare stonesngems native trace vs PDDL simulation step-by-step.")
     ap.add_argument("--domain", type=Path, default=repo_root() / "pddl" / "domain.pddl",
                     help="Domain PDDL (default: pddl/domain.pddl)")
-    ap.add_argument("--problem", required=True, type=Path, help="Problem PDDL or level txt")
+    ap.add_argument("--problem", required=True, type=Path, help="Problem PDDL or level txt (used for both planning and stones_trace)")
     ap.add_argument("--plan", type=Path, help="Plan in S-expression (e.g., fd-opt.plan). If omitted, FD will generate one.")
     ap.add_argument("--native-trace", type=Path, help="Trace from stones_trace (JSONL). If omitted, stones_trace will be run in-memory using the plan.")
     ap.add_argument("--timeout", type=int, default=None, help="Translate timeout (seconds)")
     args = ap.parse_args()
 
     domain = args.domain.resolve()
-    problem = args.problem.resolve()
+    problem_input = args.problem.resolve()
+
+    # If problem is a level .txt, generate a temp PDDL and remember the level path.
+    temp_problem_dir: Optional[tempfile.TemporaryDirectory] = None
+    if problem_input.suffix.lower() == ".txt":
+        level_path = problem_input
+        problem_name = problem_input.stem
+        gen_py = repo_root() / "pddl" / "problem_gen.py"
+        if not gen_py.exists():
+            sys.stderr.write(f"[ERR] problem_gen.py not found at {gen_py}\n")
+            return 1
+        temp_problem_dir = tempfile.TemporaryDirectory(prefix="gen_problem_")
+        problem = Path(temp_problem_dir.name) / f"{problem_name}.pddl"
+        cmd = [sys.executable, str(gen_py), str(problem_input), "-p", problem_name]
+        rc = subprocess.run(cmd, text=True, capture_output=True)
+        if rc.returncode != 0:
+            sys.stderr.write(f"[ERR] problem_gen failed (rc={rc.returncode})\n")
+            sys.stderr.write(rc.stdout or "")
+            sys.stderr.write(rc.stderr or "")
+            return 1
+        problem.write_text(rc.stdout, encoding="utf-8")
+    else:
+        problem = problem_input
+        # Try to find a level txt alongside the problem or fallback to pddl/level.txt
+        cand = problem.with_suffix(".txt")
+        default_level = repo_root() / "pddl" / "level.txt"
+        if cand.exists():
+            level_path = cand
+        elif default_level.exists():
+            level_path = default_level
+        else:
+            sys.stderr.write("[ERR] Level file required for stones_trace (provide problem as .txt or add <problem>.txt or pddl/level.txt)\n")
+            return 1
 
     plan_path: Optional[Path] = args.plan.resolve() if args.plan else None
 
     if plan_path is None:
         # Auto-generate plan using tools/plan.py with FD
-        out_root = Path(tempfile.mkdtemp(prefix="cmp_plan_"))
         problem_name = normalise_problem_name(problem)
         gen_cmd = [
             sys.executable,
@@ -379,7 +410,6 @@ def main() -> int:
             "--planner", "fd",
             "--domain", str(domain),
             "--problem", str(problem),
-            "--out-root", str(out_root),
         ]
         print(f"[INFO] Generating plan via Fast Downward: {' '.join(gen_cmd)}")
         rc = subprocess.run(gen_cmd, text=True, capture_output=True)
@@ -388,7 +418,8 @@ def main() -> int:
             sys.stderr.write(rc.stdout or "")
             sys.stderr.write(rc.stderr or "")
             return 1
-        plan_path = out_root / problem_name / "fd.plan"
+        plan_dir = repo_root() / "plans" / problem_name
+        plan_path = plan_dir / "fd.plan"
         if not plan_path.exists():
             sys.stderr.write(f"[ERR] Generated plan not found at {plan_path}\n")
             return 1
@@ -397,6 +428,47 @@ def main() -> int:
     vars_out, init_state, ops = parse_sas(sas_text)
     op_map = build_op_map(ops)
     plan_actions = read_plan(plan_path)
+
+    def plan_actions_to_dirs(actions: List[Tuple[str, List[str]]]) -> Path:
+        def dir_from_coords(src: str, dst: str) -> Optional[str]:
+            m1 = re.match(r"c_(\d+)_(\d+)", src)
+            m2 = re.match(r"c_(\d+)_(\d+)", dst)
+            if not (m1 and m2):
+                return None
+            r1, c1 = int(m1.group(1)), int(m1.group(2))
+            r2, c2 = int(m2.group(1)), int(m2.group(2))
+            dr, dc = r2 - r1, c2 - c1
+            if dr == -1 and dc == 0:
+                return "up"
+            if dr == 1 and dc == 0:
+                return "down"
+            if dr == 0 and dc == -1:
+                return "left"
+            if dr == 0 and dc == 1:
+                return "right"
+            return None
+
+        dirs: List[str] = []
+        for name, args_list in actions:
+            if len(args_list) >= 3:
+                d = dir_from_coords(args_list[1], args_list[2])
+                if d:
+                    dirs.append(d)
+                    continue
+            lname = name.lower()
+            if "up" in lname:
+                dirs.append("up")
+            elif "down" in lname:
+                dirs.append("down")
+            elif "left" in lname:
+                dirs.append("left")
+            elif "right" in lname:
+                dirs.append("right")
+        tmp = Path(tempfile.mkdtemp(prefix="play_plan_")) / "plan.play"
+        tmp.write_text("\n".join(f"({d})" for d in dirs) + ("\n" if dirs else ""), encoding="utf-8")
+        return tmp
+
+    play_plan_path = plan_actions_to_dirs(plan_actions)
 
     state = list(init_state)
     pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]] = []
@@ -420,7 +492,7 @@ def main() -> int:
     if args.native_trace:
         native_steps = load_native_trace(args.native_trace.resolve())
     else:
-        native_steps = run_stones_trace(plan_path, problem, args.timeout)
+        native_steps = run_stones_trace(play_plan_path, level_path, args.timeout)
     mismatches = compare_traces(native_steps, pddl_trace)
     return 0 if mismatches == 0 else 2
 

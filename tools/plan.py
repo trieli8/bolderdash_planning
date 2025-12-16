@@ -370,8 +370,9 @@ def solve_with_fd(domain: Path, problem: Path, timeout: int | None, optimal: boo
         td_path = Path(td)
 
         if optimal:
-            # Optimal: rely on alias if supported by this FD version. Alias must come before domain/problem.
-            cmd = [sys.executable, str(fd_py), "--alias", "seq-opt-lmcut", str(domain), str(problem)]
+            # Optimal: A* with IPDB heuristic (handles ADL after compilation better than lmcut alias).
+            cmd = [sys.executable, str(fd_py), str(domain), str(problem),
+                   "--search", "astar(ipdb())"]
             tag = "fd-opt"
         else:
             # Satisficing: stop after first found plan.
@@ -488,6 +489,7 @@ def main() -> int:
         problem_name = problem.stem
         try:
             problem, temp_problem_dir = generate_problem_from_level(problem, problem_name)
+            level_file = problem
             print(f"[INFO] Generated PDDL problem from {args.problem} -> {problem}")
         except Exception as e:
             print(f"[ERR] Failed to generate PDDL problem from {problem}: {e}", file=sys.stderr)
@@ -548,19 +550,26 @@ def main() -> int:
 
     if args.play_output and play_candidates:
         plan_file = play_candidates[0]
-        level_file = args.play_level.resolve() if args.play_level else None
-        try:
-            print(f"[PLAY] Launching plan_player with {plan_file}" + (f" and level {level_file}" if level_file else ""))
-            rc, out, err = play_plan(plan_file, level_file)
-            if out:
-                sys.stdout.write(out)
-            if err:
-                sys.stderr.write(err)
-            if rc != 0:
-                print(f"[WARN] plan_player exited with code {rc}", file=sys.stderr)
-        except Exception as e:
-            print(f"[WARN] Could not launch plan_player: {e}", file=sys.stderr)
-
+        plan_play_file = out_dir / f"{plan_file.stem}.play.plan"
+        if plan_play_file.exists():
+            problem = args.problem.resolve()
+            if problem.suffix.lower() == ".txt":
+                level_play_file = problem
+            else:
+                level_play_file = args.play_level.resolve() if args.play_level else None
+            try:
+                print(f"[PLAY] Launching plan_player with {plan_play_file}" + (f" and level {level_play_file}" if level_file else ""))
+                rc, out, err = play_plan(plan_play_file, level_play_file)
+                if out:
+                    sys.stdout.write(out)
+                if err:
+                    sys.stderr.write(err)
+                if rc != 0:
+                    print(f"[WARN] plan_player exited with code {rc}", file=sys.stderr)
+            except Exception as e:
+                print(f"[WARN] Could not launch plan_player: {e}", file=sys.stderr)
+        else:
+            print(f"[WARN] No play plan file found at {plan_play_file}", file=sys.stderr)
     exit_code = 0
 
     if temp_problem_dir is not None:

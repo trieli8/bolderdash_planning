@@ -11,6 +11,7 @@ where each cell_i is an integer HiddenCellType ID.
 
 import argparse
 import sys
+from pathlib import Path
 
 # ----------------------------------------------------------------------
 # Mapping from HiddenCellType IDs to our simplified PDDL predicates
@@ -142,7 +143,7 @@ def generate_pddl_problem(
 
     # Agent position
     ar, ac = agent_pos
-    init_lines.append(f"    (at-agent {cell_name(ar, ac)})")
+    init_lines.append(f"    (agent-at {cell_name(ar, ac)})")
 
     # Cell contents
     for (r, c), kind in contents.items():
@@ -241,7 +242,7 @@ def main():
     )
     parser.add_argument(
         "-p", "--problem-name",
-        default="level-1",
+        default="",
         help="Name of the PDDL problem (default: level-1)."
     )
     parser.add_argument(
@@ -271,6 +272,9 @@ def main():
     else:
         level_str = level_input
 
+    if args.problem_name == "":
+        args.problem_name = level_input.rsplit(".", 1)[0] if level_input.endswith(".txt") else "level"
+
     try:
         pddl = generate_pddl_problem(
             level_str,
@@ -282,7 +286,15 @@ def main():
         sys.stderr.write(f"Error: {e}\n")
         sys.exit(1)
 
+    # Write to stdout
     sys.stdout.write(pddl)
+
+    # Also persist to <problem_name>.pddl in the current working directory
+    try:
+        out_path = Path(f"{args.problem_name}.pddl")
+        out_path.write_text(pddl, encoding="utf-8")
+    except Exception as e:
+        sys.stderr.write(f"Warning: failed to write {args.problem_name}.pddl: {e}\n")
 
 
 if __name__ == "__main__":

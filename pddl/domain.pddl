@@ -1,5 +1,5 @@
 (define (domain mine-tick-gravity)
-  (:requirements :adl) ; STRIPS + typing + neg-pre + disjunction + cond-effects
+  (:requirements :strips :typing :negative-preconditions :disjunctive-preconditions :conditional-effects)
 
   (:types
     cell agent
@@ -109,7 +109,7 @@
       (scan-at ?start))
   )
 
-    (:action move-push-rock
+  (:action move-push-rock
     :parameters (?a - agent ?from ?to ?stone_dest ?start - cell)
     :precondition (and (agent-alive)
       (agent-at ?from)
