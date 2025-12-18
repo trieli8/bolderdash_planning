@@ -14,6 +14,7 @@ THIS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = THIS_DIR.parents[1]
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
+import json
 from common import (  # type: ignore  # noqa: E402
     PlanResult,
     parse_sexp_action,
@@ -204,7 +205,13 @@ def apply(op: SASOperator, state: List[int]) -> None:
         state[var] = val
 
 
-def run_forced_actions(forced_ops: List[SASOperator], state: List[int], max_steps: int = 10000) -> List[Tuple[str, List[str]]]:
+def run_forced_actions(
+    forced_ops: List[SASOperator],
+    state: List[int],
+    *,
+    trace: List[dict] | None = None,
+    max_steps: int = 10000,
+) -> List[Tuple[str, List[str]]]:
     """
     Repeatedly apply any applicable forced actions until none remain.
     """
@@ -220,6 +227,12 @@ def run_forced_actions(forced_ops: List[SASOperator], state: List[int], max_step
             name = op.name_tokens[0] if op.name_tokens else ""
             args = op.name_tokens[1:]
             executed.append((name, args))
+            if trace is not None:
+                trace.append({
+                    "action": f"{name} " + " ".join(args),
+                    "state": list(state),
+                    "forced": True,
+                })
             steps += 1
             if steps >= max_steps:
                 break
@@ -298,6 +311,8 @@ def run_instruction_follower(
         "actions_count": len(user_actions),
     }
 
+    state_trace: List[dict] = []
+
     if run_forced and sas_text.strip():
         try:
             state, operators = parse_sas(sas_text)
@@ -316,11 +331,14 @@ def run_instruction_follower(
                 write_plan_outputs(out_dir, res)
             return res, out_dir
 
+        # Seed trace with initial state
+        state_trace.append({"action": "init", "state": list(state), "forced": False})
+
         op_map = {(op.key[0], op.key[1]): op for op in operators}
         forced_ops = [op for op in operators if op.is_forced]
 
         # Initial forced closure
-        executed.extend(run_forced_actions(forced_ops, state))
+        executed.extend(run_forced_actions(forced_ops, state, trace=state_trace))
 
         for name, args_list in user_actions:
             key = (name.lower(), tuple(a.lower() for a in args_list))
@@ -333,12 +351,18 @@ def run_instruction_follower(
                 break
             apply(op, state)
             executed.append((name, args_list))
-            executed.extend(run_forced_actions(forced_ops, state))
+            state_trace.append({
+                "action": f"{name} " + " ".join(args_list),
+                "state": list(state),
+                "forced": False,
+            })
+            executed.extend(run_forced_actions(forced_ops, state, trace=state_trace))
         else:
             # Final forced closure
-            executed.extend(run_forced_actions(forced_ops, state))
+            executed.extend(run_forced_actions(forced_ops, state, trace=state_trace))
     else:
         executed = user_actions
+        state_trace = []
 
     status = "solved" if executed else "unsolved"
     res = PlanResult(
@@ -352,6 +376,10 @@ def run_instruction_follower(
         metrics=metrics,
     )
     if write_outputs:
+        if state_trace:
+            trace_path = out_dir / "state_trace.jsonl"
+            trace_path.write_text("\n".join(json.dumps(entry) for entry in state_trace) + "\n", encoding="utf-8")
+            res.metrics["state_trace"] = str(trace_path)
         write_plan_outputs(out_dir, res)
 
     return res, out_dir

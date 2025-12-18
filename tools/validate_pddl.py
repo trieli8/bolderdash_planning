@@ -248,7 +248,21 @@ def cells_from_atoms(atoms: Iterable[str]) -> Tuple[Optional[int], Set[int], Set
             continue
         r = int(m.group(1)); c = int(m.group(2))
         max_r = max(max_r, r); max_c = max(max_c, c)
-        idx = r * (max_c + 1) + c  # temporary; final cols computed after loop
+
+    cols = max_c + 1 if max_c >= 0 else 0
+    rows = max_r + 1 if max_r >= 0 else 0
+
+    for atom in atoms:
+        lower = atom.lower()
+        m = cell_re.search(lower)
+        if not m:
+            continue
+        r = int(m.group(1)); c = int(m.group(2))
+
+        if "negatedatom" == lower[:11]:
+            continue
+
+        idx = r * cols + c 
         if "agent-at" in lower:
             agent = idx
         elif "gem" in lower:
@@ -258,27 +272,7 @@ def cells_from_atoms(atoms: Iterable[str]) -> Tuple[Optional[int], Set[int], Set
         elif "dirt" in lower:
             dirt.add(idx)
 
-    cols = max_c + 1 if max_c >= 0 else 0
-    rows = max_r + 1 if max_r >= 0 else 0
-
-    # Recompute indexes with correct cols
-    agent_idx = None
-    if agent is not None and cols:
-        r = agent // cols
-        c = agent % cols
-        agent_idx = r * cols + c
-
-    def remap(s: Set[int]) -> Set[int]:
-        if cols == 0:
-            return set()
-        out = set()
-        for v in s:
-            r = v // (max_c + 1)
-            c = v % (max_c + 1)
-            out.add(r * cols + c)
-        return out
-
-    return agent_idx, remap(gems), remap(stones), remap(dirt), rows, cols
+    return agent, gems, stones, dirt, rows, cols
 
 
 # -------------------- Native trace --------------------
@@ -553,7 +547,8 @@ def main() -> int:
         apply(op, state)
         atoms = extract_state_atoms(vars_out, state)
         agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
-        pddl_trace.append((agent or -1, gems, stones, dirt))
+        if 'fa-' != op.name_tokens[0][0:3]:
+            pddl_trace.append((agent or -1, gems, stones, dirt))
 
     if args.native_trace:
         native_steps = load_native_trace(args.native_trace.resolve())

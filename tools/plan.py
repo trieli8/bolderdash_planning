@@ -193,6 +193,8 @@ def write_direction_plan(path: Path, actions: List[Tuple[str, List[str]]]) -> No
     """
     tokens: List[str] = []
     for name, args in actions:
+        if name.lower()[0:2] == "fa":
+            continue
         if len(args) >= 3:
             direction = _dir_from_coords(args[1], args[2])
             if direction:
@@ -358,7 +360,14 @@ def solve_with_ff(domain: Path, problem: Path, timeout: int | None, stream: bool
     )
 
 
-def solve_with_fd(domain: Path, problem: Path, timeout: int | None, optimal: bool, stream: bool) -> PlanResult:
+def solve_with_fd(
+    domain: Path,
+    problem: Path,
+    timeout: int | None,
+    optimal: bool,
+    stream: bool,
+    keep_searching: bool = False,
+) -> PlanResult:
     root = repo_root()
     fd_py = root / "planners" / "fast-downward" / "fast-downward.py"
     if not fd_py.exists():
@@ -375,11 +384,14 @@ def solve_with_fd(domain: Path, problem: Path, timeout: int | None, optimal: boo
                    "--search", "astar(ipdb())"]
             tag = "fd-opt"
         else:
-            # Satisficing: stop after first found plan.
-            cmd = [sys.executable, str(fd_py), str(domain), str(problem),
-                   "--search", "lazy_greedy([ff()], preferred=[ff()])"]
-            tag = "fd"
-
+            # Satisficing: default stops after first plan; optionally run an anytime loop.
+            if keep_searching:
+                search = "iterated([lazy_greedy([ff()], preferred=[ff()])], repeat_last=true)"
+                tag = "fd-any"
+            else:
+                search = "lazy_greedy([ff()], preferred=[ff()])"
+                tag = "fd"
+            cmd = [sys.executable, str(fd_py), str(domain), str(problem), "--search", search]
 
         try:
             if stream:
@@ -456,6 +468,7 @@ def main() -> int:
     ap.add_argument("--planner", choices=["ff", "fd", "both"], default="fd")
     ap.add_argument("--timeout", type=int, default=None)
     ap.add_argument("--optimal", action="store_true", help="FD only: attempt optimal planning (alias seq-opt-lmcut)")
+    ap.add_argument("--fd-keep-searching", action="store_true", help="FD only: keep searching for better solutions until timeout using iterated greedy search")
     ap.add_argument("--stream", action="store_true", help="Stream planner output live to terminal")
     ap.add_argument("--play-plan", type=Path, help="Play an existing plan file with the plan_player GUI and exit.")
     ap.add_argument("--play-level", type=Path, help="Optional level file to pass to plan_player.")
@@ -526,7 +539,14 @@ def main() -> int:
             play_candidates.append(ff_plan_path)
 
     if args.planner in ("fd", "both"):
-        r = solve_with_fd(domain, problem, timeout=args.timeout, optimal=args.optimal, stream=args.stream)
+        r = solve_with_fd(
+            domain,
+            problem,
+            timeout=args.timeout,
+            optimal=args.optimal,
+            stream=args.stream,
+            keep_searching=args.fd_keep_searching,
+        )
         results.append(r)
 
         fd_name = "fd-opt" if args.optimal else "fd"

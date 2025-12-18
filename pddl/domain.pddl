@@ -19,6 +19,7 @@
 
     ;; scan pointer for this tick
     (scan-at ?c - cell)
+    (scan-required)
 
     ;; tick parity (exactly one true at a time)
     (parity)
@@ -62,12 +63,17 @@
         (left-of ?from ?to)
         (right-of ?from ?to))
       (empty ?to)
-      (first-cell ?start))
+      (first-cell ?start)
+      (not (scan-required))
+      )
     :effect (and
       (not (agent-at ?from))
       (agent-at ?to)
       ;; start a new tick scan
-      (scan-at ?start))
+      (scan-at ?start)
+      (scan-required)
+      )
+    
   )
 
   ;; Move into dirt (mines it to empty)
@@ -80,13 +86,17 @@
         (left-of ?from ?to)
         (right-of ?from ?to))
       (dirt ?to)
-      (first-cell ?start))
+      (first-cell ?start)
+      (not (scan-required))
+      )
     :effect (and
       (not (agent-at ?from))
       (agent-at ?to)
       (not (dirt ?to))
       (empty ?to)
-      (scan-at ?start))
+      (scan-at ?start)
+      (scan-required)
+      )
   )
 
   ;; Move into gem (collect it -> got-gem)
@@ -99,14 +109,18 @@
         (left-of ?from ?to)
         (right-of ?from ?to))
       (gem ?to)
-      (first-cell ?start))
+      (first-cell ?start)
+      (not (scan-required))
+      )
     :effect (and
       (not (agent-at ?from))
       (agent-at ?to)
       (not (gem ?to))
       (empty ?to)
       (got-gem)
-      (scan-at ?start))
+      (scan-at ?start)
+      (scan-required)
+      )
   )
 
   (:action move-push-rock
@@ -121,7 +135,9 @@
       )
       (stone ?to)
       (empty ?stone_dest)
-      (first-cell ?start))
+      (first-cell ?start)
+      (not (scan-required))
+      )
     :effect (and
       (not (agent-at ?from))
       (agent-at ?to)
@@ -130,14 +146,16 @@
       (not (empty ?stone_dest))
       (stone ?stone_dest)
       ;; start a new tick scan
-      (scan-at ?start))
+      (scan-at ?start)
+      (scan-required)
+      )
   )
 
   ;; ======================================================
   ;; FORCED ACTIONS: ONE-TICK CELL UPDATE IN SCAN ORDER
   ;; ======================================================
 
-  ;; TODO deal with edge cases (at the edges of the grid)
+
   (:action fa-physics-even
     :parameters (?left ?c ?right ?down_left ?down ?down_right ?up_left ?up ?up_right - cell)
 
@@ -150,8 +168,6 @@
       (not (updated ?c))
 
       ;; Center stone (3rd column)
-      (or (stone ?c) (gem ?c))
-
       ;; Horizontal layout (middle row)
       (right-of ?left ?c)
       (right-of ?c ?right)
@@ -292,8 +308,6 @@
       (updated ?c)
 
       ;; Center stone (3rd column)
-      (or (stone ?c) (gem ?c))
-
       ;; Horizontal layout (middle row)
       (right-of ?left ?c)
       (right-of ?c ?right)
@@ -419,18 +433,30 @@
       )
   )
 
-  (:action fa-physics-bottom
+  (:action fa-physics-bottom-even
     :parameters (?c - cell)
     :precondition (and
       (scan-at ?c)
       (bottom ?c)
-      ;; Must NOT yet be marked updated for this parity
-      (or (and (parity) (not (updated ?c)))
-          (and (not (parity)) (updated ?c))))
+      (parity)
+      (not (updated ?c))
+    )
     :effect (and
-      ;; simply enforce the correct updated polarity for this parity
-      (when (parity) (updated ?c))
-      (when (not (parity)) (not (updated ?c))))
+        (updated ?c)
+      )
+  )
+
+  (:action fa-physics-bottom-odd
+    :parameters (?c - cell)
+    :precondition (and
+      (scan-at ?c)
+      (bottom ?c)
+      (not (parity))
+      (updated ?c)
+    )
+    :effect (and
+        (not (updated ?c))
+      )
   )
 
   (:action fa-physics-top-even
@@ -446,8 +472,6 @@
       (not (right-edge ?c))
 
       ;; centre has a stone or gem
-      (or (stone ?c) (gem ?c))
-
       ;; horizontal neighbours
       (right-of ?left ?c)
       (right-of ?c ?right)
@@ -558,8 +582,6 @@
       (not (left-edge ?c))
       (not (right-edge ?c))
 
-      (or (stone ?c) (gem ?c))
-
       (right-of ?left ?c)
       (right-of ?c ?right)
 
@@ -666,8 +688,6 @@
       (not (top ?c))
       (not (bottom ?c))
 
-      (or (stone ?c) (gem ?c))
-
       (right-of ?c ?right)
 
       (down ?c ?down)
@@ -748,8 +768,6 @@
       (not (top ?c))
       (not (bottom ?c))
 
-      (or (stone ?c) (gem ?c))
-
       (right-of ?c ?right)
 
       (down ?c ?down)
@@ -827,8 +845,6 @@
       (right-edge ?c)
       (not (top ?c))
       (not (bottom ?c))
-
-      (or (stone ?c) (gem ?c))
 
       (right-of ?left ?c)
 
@@ -908,8 +924,6 @@
       (not (top ?c))
       (not (bottom ?c))
 
-      (or (stone ?c) (gem ?c))
-
       (right-of ?left ?c)
 
       (down ?left ?down_left)
@@ -988,8 +1002,6 @@
       (left-edge ?c)
       (not (bottom ?c))
 
-      (or (stone ?c) (gem ?c))
-
       (right-of ?c ?right)
       (down ?c ?down)
       (down ?right ?down_right)
@@ -999,14 +1011,14 @@
       (updated ?c)
 
       ;; ---- FALL DOWN ----
-      (when
-        (and (stone ?c)
-            (empty ?down))
-        (and
-          (not (stone ?c))
-          (empty ?c)
-          (stone ?down)
-          (not (empty ?down))
+        (when
+          (and (stone ?c)
+              (empty ?down))
+          (and
+            (not (stone ?c))
+            (empty ?c)
+            (stone ?down)
+            (not (empty ?down))
           (updated ?down)))
 
       ;; ---- GEM FALL DOWN ----
@@ -1060,8 +1072,6 @@
       (top ?c)
       (left-edge ?c)
       (not (bottom ?c))
-
-      (or (stone ?c) (gem ?c))
 
       (right-of ?c ?right)
       (down ?c ?down)
@@ -1134,8 +1144,6 @@
       (right-edge ?c)
       (not (bottom ?c))
 
-      (or (stone ?c) (gem ?c))
-
       (right-of ?left ?c)
       (down ?c ?down)
       (down ?left ?down_left)
@@ -1206,8 +1214,6 @@
       (right-edge ?c)
       (not (bottom ?c))
 
-      (or (stone ?c) (gem ?c))
-
       (right-of ?left ?c)
       (down ?c ?down)
       (down ?left ?down_left)
@@ -1267,6 +1273,8 @@
     )
   )
 
+  
+  
   ;; -------- Advance scan pointer to next cell --------
 
   (:action fa-advance-scan
@@ -1301,6 +1309,7 @@
       ;; flip parity
       (when (parity) (not (parity)))
       (when (not (parity)) (parity))
+      (not (scan-required))
     )
   )
 )

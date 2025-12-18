@@ -89,6 +89,14 @@ def cell_name(r: int, c: int) -> str:
     """Name for a cell object in PDDL."""
     return f"c_{r}_{c}"
 
+def interior_cell_name(r: int, c: int) -> str:
+    """
+    Name for an interior cell once we pad the grid with a 1-cell border.
+    Interior coords are 0-based in the level string; we shift by +1 to
+    leave room for the border.
+    """
+    return cell_name(r + 1, c + 1)
+
 def generate_pddl_problem(
     level_str: str,
     problem_name: str = "level-1",
@@ -100,8 +108,12 @@ def generate_pddl_problem(
     """
     rows, cols, max_time, required_gems, cell_ids = parse_level_string(level_str)
 
-    # Build grid of object names
-    cells = [[cell_name(r, c) for c in range(cols)] for r in range(rows)]
+    # Pad with a 1-cell brick border so physics never steps outside.
+    padded_rows = rows + 2
+    padded_cols = cols + 2
+
+    # Build grid of object names (includes border)
+    cells = [[cell_name(r, c) for c in range(padded_cols)] for r in range(padded_rows)]
 
     # Find agent and classify contents
     agent_pos = None
@@ -124,6 +136,9 @@ def generate_pddl_problem(
             "No agent found in level (no cell with ID in AGENT_IDS)."
         )
 
+    # Shift agent into padded coordinates
+    padded_agent_pos = (agent_pos[0] + 1, agent_pos[1] + 1)
+
     # ------------------------------------------------------------------
     # :objects
     # ------------------------------------------------------------------
@@ -138,53 +153,63 @@ def generate_pddl_problem(
 
     # High-level flags
     init_lines.append("    (agent-alive)")
-    # Start with even parity = true
-    init_lines.append("    (parity)")
+    # init_lines.append("    (parity)")  # start on even tick
+    # init_lines.append("    (not (scan-required))")  # start on even tick
+
 
     # Agent position
-    ar, ac = agent_pos
+    ar, ac = padded_agent_pos
     init_lines.append(f"    (agent-at {cell_name(ar, ac)})")
 
     # Cell contents
-    for (r, c), kind in contents.items():
-        cname = cell_name(r, c)
-        if kind == "agent":
-            # Treat underlying cell as empty for physics
-            init_lines.append(f"    (empty {cname})")
-        elif kind == "empty":
-            init_lines.append(f"    (empty {cname})")
-        elif kind == "dirt":
-            init_lines.append(f"    (dirt {cname})")
-        elif kind == "stone":
-            init_lines.append(f"    (stone {cname})")
-        elif kind == "gem":
-            init_lines.append(f"    (gem {cname})")
-        elif kind == "brick":
-            init_lines.append(f"    (brick {cname})")
+    for r in range(padded_rows):
+        for c in range(padded_cols):
+            cname = cell_name(r, c)
+            is_border = (
+                r == 0 or r == padded_rows - 1 or c == 0 or c == padded_cols - 1
+            )
+            if is_border:
+                init_lines.append(f"    (brick {cname})")
+                continue
+
+            inner_kind = contents[(r - 1, c - 1)]
+            if inner_kind == "agent":
+                # Treat underlying cell as empty for physics
+                init_lines.append(f"    (empty {cname})")
+            elif inner_kind == "empty":
+                init_lines.append(f"    (empty {cname})")
+            elif inner_kind == "dirt":
+                init_lines.append(f"    (dirt {cname})")
+            elif inner_kind == "stone":
+                init_lines.append(f"    (stone {cname})")
+            elif inner_kind == "gem":
+                init_lines.append(f"    (gem {cname})")
+            elif inner_kind == "brick":
+                init_lines.append(f"    (brick {cname})")
 
     # Top / bottom / left-edge / right-edge predicates
-    for r in range(rows):
-        for c in range(cols):
+    for r in range(padded_rows):
+        for c in range(padded_cols):
             cname = cell_name(r, c)
             if r == 0:
                 init_lines.append(f"    (top {cname})")
-            if r == rows - 1:
+            if r == padded_rows - 1:
                 init_lines.append(f"    (bottom {cname})")
             if c == 0:
                 init_lines.append(f"    (left-edge {cname})")
-            if c == cols - 1:
+            if c == padded_cols - 1:
                 init_lines.append(f"    (right-edge {cname})")
 
     # Adjacency predicates: up, down, left-of, right-of
-    for r in range(rows):
-        for c in range(cols):
+    for r in range(padded_rows):
+        for c in range(padded_cols):
             cname = cell_name(r, c)
             # up: from above to this cell (above -> this)
             if r > 0:
                 above = cell_name(r - 1, c)
                 init_lines.append(f"    (up {above} {cname})")
             # down: from this to below (this -> below)
-            if r < rows - 1:
+            if r < padded_rows - 1:
                 below = cell_name(r + 1, c)
                 init_lines.append(f"    (down {cname} {below})")
             # right-of: left -> right
@@ -192,17 +217,17 @@ def generate_pddl_problem(
                 left = cell_name(r, c - 1)
                 init_lines.append(f"    (right-of {left} {cname})")
             # left-of: this -> right
-            if c < cols - 1:
+            if c < padded_cols - 1:
                 right = cell_name(r, c + 1)
                 init_lines.append(f"    (left-of {cname} {right})")
 
-    # Scan order: top-left to bottom-right
-    first = cell_name(0, 0)
-    last = cell_name(rows - 1, cols - 1)
+    # Scan order: top-left to bottom-right over interior cells only
+    order = [interior_cell_name(r, c) for r in range(rows) for c in range(cols)]
+    first = order[0]
+    last = order[-1]
     init_lines.append(f"    (first-cell {first})")
     init_lines.append(f"    (last-cell {last})")
 
-    order = [cell_name(r, c) for r in range(rows) for c in range(cols)]
     for i in range(len(order) - 1):
         init_lines.append(f"    (next-cell {order[i]} {order[i+1]})")
 
@@ -291,7 +316,7 @@ def main():
 
     # Also persist to <problem_name>.pddl in the current working directory
     try:
-        out_path = Path(f"pddl/{args.problem_name}.pddl")
+        out_path = Path(f"{args.problem_name}.pddl")
         out_path.write_text(pddl, encoding="utf-8")
     except Exception as e:
         sys.stderr.write(f"Warning: failed to write {args.problem_name}.pddl: {e}\n")

@@ -37,12 +37,10 @@
     (last-cell c22)
 
     ;; --- initial parity ---
-    (parity)             ; active parity
-    ;; parity1 is false by default
 
     ;; --- contents ---
     (agent-alive)
-    (at-agent c00)
+    (agent-at c00)
 
     ;; row 0
     (empty c01)
