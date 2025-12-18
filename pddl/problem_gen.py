@@ -114,6 +114,13 @@ def generate_pddl_problem(
 
     # Build grid of object names (includes border)
     cells = [[cell_name(r, c) for c in range(padded_cols)] for r in range(padded_rows)]
+    interior_cells = [interior_cell_name(r, c) for r in range(rows) for c in range(cols)]
+    border_cells = [
+        cell_name(r, c)
+        for r in range(padded_rows)
+        for c in range(padded_cols)
+        if r == 0 or r == padded_rows - 1 or c == 0 or c == padded_cols - 1
+    ]
 
     # Find agent and classify contents
     agent_pos = None
@@ -143,8 +150,8 @@ def generate_pddl_problem(
     # :objects
     # ------------------------------------------------------------------
     obj_lines = [f"    {agent_name} - agent"]
-    cell_objs = " ".join(c for row in cells for c in row)
-    obj_lines.append(f"    {cell_objs} - cell")
+    obj_lines.append(f"    {' '.join(interior_cells)} - real-cell")
+    obj_lines.append(f"    {' '.join(border_cells)} - border-cell")
 
     # ------------------------------------------------------------------
     # :init
@@ -153,8 +160,6 @@ def generate_pddl_problem(
 
     # High-level flags
     init_lines.append("    (agent-alive)")
-    # init_lines.append("    (parity)")  # start on even tick
-    # init_lines.append("    (not (scan-required))")  # start on even tick
 
 
     # Agent position
@@ -169,9 +174,11 @@ def generate_pddl_problem(
                 r == 0 or r == padded_rows - 1 or c == 0 or c == padded_cols - 1
             )
             if is_border:
+                init_lines.append(f"    (border-cell {cname})")
                 init_lines.append(f"    (brick {cname})")
                 continue
 
+            init_lines.append(f"    (real-cell {cname})")
             inner_kind = contents[(r - 1, c - 1)]
             if inner_kind == "agent":
                 # Treat underlying cell as empty for physics
@@ -187,27 +194,15 @@ def generate_pddl_problem(
             elif inner_kind == "brick":
                 init_lines.append(f"    (brick {cname})")
 
-    # Top / bottom / left-edge / right-edge predicates
-    for r in range(padded_rows):
-        for c in range(padded_cols):
-            cname = cell_name(r, c)
-            if r == 0:
-                init_lines.append(f"    (top {cname})")
-            if r == padded_rows - 1:
-                init_lines.append(f"    (bottom {cname})")
-            if c == 0:
-                init_lines.append(f"    (left-edge {cname})")
-            if c == padded_cols - 1:
-                init_lines.append(f"    (right-edge {cname})")
 
     # Adjacency predicates: up, down, left-of, right-of
     for r in range(padded_rows):
         for c in range(padded_cols):
             cname = cell_name(r, c)
-            # up: from above to this cell (above -> this)
+            # up: from this cell to the one above (this -> above)
             if r > 0:
                 above = cell_name(r - 1, c)
-                init_lines.append(f"    (up {above} {cname})")
+                init_lines.append(f"    (up {cname} {above})")
             # down: from this to below (this -> below)
             if r < padded_rows - 1:
                 below = cell_name(r + 1, c)

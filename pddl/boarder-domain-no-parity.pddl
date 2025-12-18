@@ -159,7 +159,6 @@
     :precondition (and
       ;; is the scanner here
       (scan-at ?c)
-
       (not (updated ?c))
 
       ;; Center stone (3rd column)
