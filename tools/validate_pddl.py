@@ -361,6 +361,8 @@ def expand_actions_with_forced(
     ops: List[SASOp],
     init_state: List[int],
 ) -> List[Tuple[str, List[str]]]:
+    if not user_actions:
+        raise ValueError("No usable actions found in human plan.")
     if any(is_forced_action_name(name) for name, _ in user_actions):
         raise ValueError("Human plan includes forced actions; use --plan instead.")
     state = list(init_state)
@@ -391,10 +393,16 @@ def expand_directions_with_forced(
     forced_ops = [op for op in ops if op.is_forced]
     user_ops = [op for op in ops if not op.is_forced]
     ops_by_dir: Dict[str, List[SASOp]] = {}
+    seen_by_dir: Dict[str, Set[Tuple[str, Tuple[str, ...]]]] = {}
     for op in user_ops:
         direction = op_direction(op)
         if not direction:
             continue
+        seen = seen_by_dir.setdefault(direction, set())
+        key = op.key
+        if key in seen:
+            continue
+        seen.add(key)
         ops_by_dir.setdefault(direction, []).append(op)
     executed: List[Tuple[str, List[str]]] = []
     executed.extend(run_forced_actions(forced_ops, state))
