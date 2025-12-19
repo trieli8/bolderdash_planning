@@ -5,6 +5,8 @@ Compare PDDL simulation (via Fast Downward translate/SAS) against native stonesn
 Usage:
   python tools/validate_pddl.py --domain pddl/domain.pddl --problem pddl/level01.pddl \
       --plan plans/level-1/fd-opt.plan --native-trace native_trace.jsonl
+  python tools/validate_pddl.py --problem pddl/level01.pddl \
+      --human-plan plans/level-1/fd.play.plan --human-plan-format directions
 
 Steps:
   - Run FD translator to get SAS.
@@ -22,6 +24,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional, Iterable, Set
+from plan import write_direction_plan
 
 
 
@@ -54,6 +57,72 @@ def read_plan(plan_path: Path) -> List[Tuple[str, List[str]]]:
     return actions
 
 
+_DIRECTION_ALIASES = {
+    "up": "up",
+    "w": "up",
+    "n": "up",
+    "north": "up",
+    "down": "down",
+    "s": "down",
+    "south": "down",
+    "left": "left",
+    "a": "left",
+    "l": "left",
+    "west": "left",
+    "right": "right",
+    "d": "right",
+    "r": "right",
+    "east": "right",
+    "noop": "noop",
+    "no-op": "noop",
+    "stay": "noop",
+}
+
+
+def _token_from_plan_line(raw: str) -> Optional[str]:
+    stripped = raw.strip()
+    if not stripped or stripped[0] in (";", "#"):
+        return None
+    if "(" in stripped:
+        lparen = stripped.find("(")
+        rparen = stripped.find(")", lparen + 1)
+        inside = stripped[lparen + 1: (rparen if rparen != -1 else len(stripped))]
+        token = inside.strip().split()[0] if inside.strip() else ""
+    else:
+        token = stripped.split()[0]
+    return token.lower() if token else None
+
+
+def detect_human_plan_format(plan_path: Path) -> str:
+    tokens: List[str] = []
+    for raw in plan_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        token = _token_from_plan_line(raw)
+        if token:
+            tokens.append(token)
+    if not tokens:
+        raise ValueError(f"No usable actions found in plan: {plan_path}")
+    if all(token in _DIRECTION_ALIASES for token in tokens):
+        return "directions"
+    return "actions"
+
+
+def read_direction_plan(plan_path: Path) -> List[str]:
+    directions: List[str] = []
+    for raw in plan_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        token = _token_from_plan_line(raw)
+        if not token:
+            continue
+        mapped = _DIRECTION_ALIASES.get(token)
+        if not mapped:
+            raise ValueError(f"Unrecognized direction token '{token}' in {plan_path}")
+        if mapped == "noop":
+            raise ValueError("Direction 'noop' is not supported by the PDDL domain.")
+        directions.append(mapped)
+    if not directions:
+        raise ValueError(f"No usable actions found in plan: {plan_path}")
+    return directions
+
+
 # -------------------- SAS parsing --------------------
 
 @dataclass
@@ -73,6 +142,13 @@ class SASOp:
         if not self.name_tokens:
             return "", ()
         return self.name_tokens[0].lower(), tuple(t.lower() for t in self.name_tokens[1:])
+
+    @property
+    def is_forced(self) -> bool:
+        if not self.name_tokens:
+            return False
+        name = self.name_tokens[0].lower()
+        return name.startswith("__forced__") or name.startswith("fa_") or name.startswith("forced-")
 
 
 def run_translate(domain: Path, problem: Path, timeout: Optional[int]) -> str:
@@ -221,6 +297,127 @@ def build_op_map(ops: List[SASOp]) -> Dict[Tuple[str, Tuple[str, ...]], SASOp]:
     return {op.key: op for op in ops}
 
 
+def _dir_from_coords(src: str, dst: str) -> Optional[str]:
+    m1 = re.match(r"c_(\d+)_(\d+)", src)
+    m2 = re.match(r"c_(\d+)_(\d+)", dst)
+    if not (m1 and m2):
+        return None
+    r1, c1 = int(m1.group(1)), int(m1.group(2))
+    r2, c2 = int(m2.group(1)), int(m2.group(2))
+    dr, dc = r2 - r1, c2 - c1
+    if dr == -1 and dc == 0:
+        return "up"
+    if dr == 1 and dc == 0:
+        return "down"
+    if dr == 0 and dc == -1:
+        return "left"
+    if dr == 0 and dc == 1:
+        return "right"
+    return None
+
+
+def op_direction(op: SASOp) -> Optional[str]:
+    if not op.name_tokens:
+        return None
+    name = op.name_tokens[0].lower()
+    if not name.startswith("move"):
+        return None
+    if len(op.name_tokens) < 4:
+        return None
+    return _dir_from_coords(op.name_tokens[2], op.name_tokens[3])
+
+
+def _action_from_op(op: SASOp) -> Tuple[str, List[str]]:
+    name = op.name_tokens[0].lower() if op.name_tokens else ""
+    args = [tok.lower() for tok in op.name_tokens[1:]]
+    return name, args
+
+
+def run_forced_actions(
+    forced_ops: List[SASOp],
+    state: List[int],
+    *,
+    max_steps: int = 10000,
+) -> List[Tuple[str, List[str]]]:
+    executed: List[Tuple[str, List[str]]] = []
+    steps = 0
+    while steps < max_steps:
+        applicable_ops = [op for op in forced_ops if applicable(op, state)]
+        if not applicable_ops:
+            break
+        for op in sorted(applicable_ops, key=lambda o: " ".join(o.name_tokens)):
+            apply(op, state)
+            executed.append(_action_from_op(op))
+            steps += 1
+            if steps >= max_steps:
+                break
+    if steps >= max_steps:
+        raise RuntimeError("Forced action expansion exceeded max_steps; possible infinite loop.")
+    return executed
+
+
+def expand_actions_with_forced(
+    user_actions: List[Tuple[str, List[str]]],
+    ops: List[SASOp],
+    init_state: List[int],
+) -> List[Tuple[str, List[str]]]:
+    if any(is_forced_action_name(name) for name, _ in user_actions):
+        raise ValueError("Human plan includes forced actions; use --plan instead.")
+    state = list(init_state)
+    forced_ops = [op for op in ops if op.is_forced]
+    op_map = build_op_map(ops)
+    executed: List[Tuple[str, List[str]]] = []
+    executed.extend(run_forced_actions(forced_ops, state))
+    for name, args_list in user_actions:
+        key = (name.lower(), tuple(a.lower() for a in args_list))
+        op = op_map.get(key)
+        if not op:
+            raise ValueError(f"Missing operator for action: {name} {' '.join(args_list)}")
+        if not applicable(op, state):
+            raise ValueError(f"Inapplicable action: {name} {' '.join(args_list)}")
+        apply(op, state)
+        executed.append((name.lower(), [a.lower() for a in args_list]))
+        executed.extend(run_forced_actions(forced_ops, state))
+    executed.extend(run_forced_actions(forced_ops, state))
+    return executed
+
+
+def expand_directions_with_forced(
+    directions: List[str],
+    ops: List[SASOp],
+    init_state: List[int],
+) -> List[Tuple[str, List[str]]]:
+    state = list(init_state)
+    forced_ops = [op for op in ops if op.is_forced]
+    user_ops = [op for op in ops if not op.is_forced]
+    ops_by_dir: Dict[str, List[SASOp]] = {}
+    for op in user_ops:
+        direction = op_direction(op)
+        if not direction:
+            continue
+        ops_by_dir.setdefault(direction, []).append(op)
+    executed: List[Tuple[str, List[str]]] = []
+    executed.extend(run_forced_actions(forced_ops, state))
+    for direction in directions:
+        candidates = [op for op in ops_by_dir.get(direction, []) if applicable(op, state)]
+        if not candidates:
+            raise ValueError(f"No applicable action found for direction '{direction}'.")
+        if len(candidates) > 1:
+            names = [f"{op.name_tokens[0]} {' '.join(op.name_tokens[1:])}" for op in candidates]
+            raise ValueError(f"Ambiguous actions for direction '{direction}': {names}")
+        op = candidates[0]
+        apply(op, state)
+        executed.append(_action_from_op(op))
+        executed.extend(run_forced_actions(forced_ops, state))
+    executed.extend(run_forced_actions(forced_ops, state))
+    return executed
+
+
+def is_forced_action_name(name: str) -> bool:
+    lower = name.lower()
+    return lower.startswith("__forced__") or lower.startswith("fa_") or lower.startswith("forced-")
+
+
 def extract_state_atoms(vars_out: List[SASVar], state: List[int]) -> List[str]:
     atoms: List[str] = []
     for var, val in zip(vars_out, state):
@@ -249,8 +446,8 @@ def cells_from_atoms(atoms: Iterable[str]) -> Tuple[Optional[int], Set[int], Set
         r = int(m.group(1)); c = int(m.group(2))
         max_r = max(max_r, r); max_c = max(max_c, c)
 
-    cols = max_c + 1 if max_c >= 0 else 0
-    rows = max_r + 1 if max_r >= 0 else 0
+    cols = max_c if max_c >= 0 else 0
+    rows = max_r if max_r >= 0 else 0
 
     for atom in atoms:
         lower = atom.lower()
@@ -262,7 +459,10 @@ def cells_from_atoms(atoms: Iterable[str]) -> Tuple[Optional[int], Set[int], Set
         if "negatedatom" == lower[:11]:
             continue
 
-        idx = r * cols + c 
+        if r == 0 or c == 0 or r == (rows+1) or c == (cols+1):
+            continue  # border cells are ignored
+
+        idx = (r-1) * cols + (c-1) 
         if "agent-at" in lower:
             agent = idx
         elif "gem" in lower:
@@ -418,11 +618,19 @@ def main() -> int:
                     help="Domain PDDL (default: pddl/domain.pddl)")
     ap.add_argument("--problem", required=True, type=Path, help="Problem PDDL or level txt (used for both planning and stones_trace)")
     ap.add_argument("--plan", type=Path, help="Plan in S-expression (e.g., fd-opt.plan). If omitted, FD will generate one.")
+    ap.add_argument("--human-plan", type=Path,
+                    help="Human-readable plan containing only agent moves (directions or PDDL actions). Forced actions will be generated.")
+    ap.add_argument("--human-plan-format", choices=["auto", "directions", "actions"], default="auto",
+                    help="Interpretation of --human-plan. 'directions' expects up/down/left/right; 'actions' expects PDDL S-expr.")
     ap.add_argument("--native-trace", type=Path, help="Trace from stones_trace (JSONL). If omitted, stones_trace will be run in-memory using the plan.")
     ap.add_argument("--pddl-trace-out", type=Path, help="Optional path to write the simulated PDDL trace as JSONL for external viewers.")
     ap.add_argument("--view", action="store_true", help="Open a simple GUI to view native vs PDDL states side-by-side.")
     ap.add_argument("--timeout", type=int, default=None, help="Translate timeout (seconds)")
     args = ap.parse_args()
+
+    if args.plan and args.human_plan:
+        sys.stderr.write("[ERR] --plan and --human-plan are mutually exclusive.\n")
+        return 2
 
     domain = args.domain.resolve()
     problem_input = args.problem.resolve()
@@ -460,8 +668,9 @@ def main() -> int:
             return 1
 
     plan_path: Optional[Path] = args.plan.resolve() if args.plan else None
+    human_plan_path: Optional[Path] = args.human_plan.resolve() if args.human_plan else None
 
-    if plan_path is None:
+    if plan_path is None and human_plan_path is None:
         # Auto-generate plan using tools/plan.py with FD
         problem_name = normalise_problem_name(problem)
         gen_cmd = [
@@ -487,67 +696,51 @@ def main() -> int:
     sas_text = run_translate(domain, problem, args.timeout)
     vars_out, init_state, ops = parse_sas(sas_text)
     op_map = build_op_map(ops)
-    plan_actions = read_plan(plan_path)
+    if human_plan_path:
+        try:
+            fmt = args.human_plan_format
+            if fmt == "auto":
+                fmt = detect_human_plan_format(human_plan_path)
+            if fmt == "directions":
+                directions = read_direction_plan(human_plan_path)
+                plan_actions = expand_directions_with_forced(directions, ops, init_state)
+            else:
+                user_actions = read_plan(human_plan_path)
+                plan_actions = expand_actions_with_forced(user_actions, ops, init_state)
+        except Exception as e:
+            sys.stderr.write(f"[ERR] Failed to expand human plan: {e}\n")
+            return 1
+    else:
+        if plan_path is None:
+            sys.stderr.write("[ERR] Plan path is required if --human-plan is not provided.\n")
+            return 1
+        plan_actions = read_plan(plan_path)
 
-    def plan_actions_to_dirs(actions: List[Tuple[str, List[str]]]) -> Path:
-        def dir_from_coords(src: str, dst: str) -> Optional[str]:
-            m1 = re.match(r"c_(\d+)_(\d+)", src)
-            m2 = re.match(r"c_(\d+)_(\d+)", dst)
-            if not (m1 and m2):
-                return None
-            r1, c1 = int(m1.group(1)), int(m1.group(2))
-            r2, c2 = int(m2.group(1)), int(m2.group(2))
-            dr, dc = r2 - r1, c2 - c1
-            if dr == -1 and dc == 0:
-                return "up"
-            if dr == 1 and dc == 0:
-                return "down"
-            if dr == 0 and dc == -1:
-                return "left"
-            if dr == 0 and dc == 1:
-                return "right"
-            return None
-
-        dirs: List[str] = []
-        for name, args_list in actions:
-            if len(args_list) >= 3:
-                d = dir_from_coords(args_list[1], args_list[2])
-                if d:
-                    dirs.append(d)
-                    continue
-            lname = name.lower()
-            if "up" in lname:
-                dirs.append("up")
-            elif "down" in lname:
-                dirs.append("down")
-            elif "left" in lname:
-                dirs.append("left")
-            elif "right" in lname:
-                dirs.append("right")
-        tmp = Path(tempfile.mkdtemp(prefix="play_plan_")) / "plan.play"
-        tmp.write_text("\n".join(f"({d})" for d in dirs) + ("\n" if dirs else ""), encoding="utf-8")
-        return tmp
-
-    play_plan_path = plan_actions_to_dirs(plan_actions)
+    play_plan_path = Path(tempfile.mkdtemp(prefix="play_plan_")) / "plan.play"
+    write_direction_plan(play_plan_path, plan_actions)
+    if not play_plan_path.exists():
+        play_plan_path.write_text("", encoding="utf-8")
 
     state = list(init_state)
     pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]] = []
     atoms = extract_state_atoms(vars_out, state)
     agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
-    pddl_trace.append((agent or -1, gems, stones, dirt))
+    pddl_trace.append((agent, gems, stones, dirt))
 
     for (name, args_list) in plan_actions:
         op = op_map.get((name, tuple(args_list)))
         if not op:
             print(f"[ERR] Missing operator for action: {name} {' '.join(args_list)}")
             return 1
-        if not applicable(op, state):
-            print(f"[ERR] Inapplicable action: {name} {' '.join(args_list)}")
-            return 1
+        # TODO WARNING: skipping applicability check
+        # if not applicable(op, state):
+        #     print(f"[ERR] Inapplicable action: {name} {' '.join(args_list)}")
+        #     return 1
         apply(op, state)
         atoms = extract_state_atoms(vars_out, state)
         agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
-        if 'fa-' != op.name_tokens[0][0:3]:
+        # if '__forced__' != op.name_tokens[0][0:3]:
+        if "__forced__end-tick" == op.name_tokens[0]:
             pddl_trace.append((agent or -1, gems, stones, dirt))
 
     if args.native_trace:

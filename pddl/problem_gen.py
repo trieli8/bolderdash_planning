@@ -166,6 +166,7 @@ def generate_pddl_problem(
     ar, ac = padded_agent_pos
     init_lines.append(f"    (agent-at {cell_name(ar, ac)})")
 
+
     # Cell contents
     for r in range(padded_rows):
         for c in range(padded_cols):
@@ -175,14 +176,15 @@ def generate_pddl_problem(
             )
             if is_border:
                 init_lines.append(f"    (border-cell {cname})")
-                init_lines.append(f"    (brick {cname})")
+                init_lines.append(f"    (not (empty {cname}))")
+
                 continue
 
             init_lines.append(f"    (real-cell {cname})")
             inner_kind = contents[(r - 1, c - 1)]
             if inner_kind == "agent":
                 # Treat underlying cell as empty for physics
-                init_lines.append(f"    (empty {cname})")
+                init_lines.append(f"    (not (empty {cname}))")
             elif inner_kind == "empty":
                 init_lines.append(f"    (empty {cname})")
             elif inner_kind == "dirt":

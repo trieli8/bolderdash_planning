@@ -85,7 +85,7 @@ class SASOperator:
 
     @property
     def is_forced(self) -> bool:
-        return self.name_tokens and self.name_tokens[0].lower().startswith(("fa-", "fa_", "forced-"))
+        return self.name_tokens and self.name_tokens[0].lower().startswith(("__forced__", "fa_", "forced-"))
 
 
 def parse_sas(sas_text: str) -> Tuple[List[int], List[SASOperator]]:
@@ -408,7 +408,7 @@ def main() -> int:
         "--no-forced",
         dest="run_forced",
         action="store_false",
-        help="Disable automatic forced-action closure (fa-* actions) between supplied actions",
+        help="Disable automatic forced-action closure (__forced__* actions) between supplied actions",
     )
     ap.set_defaults(run_forced=True)
 

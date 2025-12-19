@@ -2,8 +2,7 @@
   (:requirements :strips :typing :negative-preconditions :disjunctive-preconditions :conditional-effects)
 
   (:types
-    cell agent
-    real-cell border-cell - cell
+    cell agent real-cell border-cell - cell
   )
 
   (:predicates
@@ -12,8 +11,6 @@
     (down ?from ?to - cell)
     (left-of ?from ?to - cell)
     (right-of ?from ?to - cell)
-    (real-cell ?c - cell)
-    (border-cell ?c - cell)
 
     ;; linear scan order (top-left -> bottom-right)
     (first-cell ?c - cell)
@@ -33,7 +30,7 @@
     (dirt ?c - cell)
     (stone ?c - cell)
     (gem ?c - cell)
-    (brick ?c - cell)    
+    (brick ?c - cell)
 
     ;; high-level state
     (agent-alive)
@@ -58,15 +55,21 @@
       (empty ?to)
       (first-cell ?start)
       (not (scan-required))
-      )
+    )
     :effect (and
       (not (agent-at ?from))
       (agent-at ?to)
-      ;; start a new tick scan
+
+      (empty ?from)
+      (not (empty ?to))
+
+      (updated ?from)
+      (updated ?to)
+
       (scan-at ?start)
       (scan-required)
-      )
-    
+    )
+
   )
 
   ;; Move into dirt (mines it to empty)
@@ -81,15 +84,23 @@
       (dirt ?to)
       (first-cell ?start)
       (not (scan-required))
-      )
+    )
     :effect (and
       (not (agent-at ?from))
       (agent-at ?to)
+
       (not (dirt ?to))
       (empty ?to)
+
+      (empty ?from)
+      (not (empty ?to))
+
+      (updated ?from)
+      (updated ?to)
+
       (scan-at ?start)
       (scan-required)
-      )
+    )
   )
 
   ;; Move into gem (collect it -> got-gem)
@@ -104,23 +115,32 @@
       (gem ?to)
       (first-cell ?start)
       (not (scan-required))
-      )
+    )
     :effect (and
       (not (agent-at ?from))
       (agent-at ?to)
+
+      (empty ?from)
+      (not (empty ?to))
+
       (not (gem ?to))
       (empty ?to)
+
+      (updated ?from)
+      (updated ?to)
+
       (got-gem)
+
       (scan-at ?start)
       (scan-required)
-      )
+    )
   )
 
   (:action move-push-rock
     :parameters (?a - agent ?from ?to ?stone_dest ?start - real-cell)
     :precondition (and (agent-alive)
       (agent-at ?from)
-      (or 
+      (or
         (and (up ?from ?to) (up ?to ?stone_dest))
         (and (left-of ?from ?to) (left-of ?to ?stone_dest))
         (and (right-of ?from ?to) (right-of ?to ?stone_dest))
@@ -130,26 +150,31 @@
       (empty ?stone_dest)
       (first-cell ?start)
       (not (scan-required))
-      )
+    )
     :effect (and
       (not (agent-at ?from))
       (agent-at ?to)
+
       (not (stone ?to))
       (empty ?to)
+
       (not (empty ?stone_dest))
       (stone ?stone_dest)
-      ;; start a new tick scan
+
+      (updated ?from)
+      (updated ?to)
+      (updated ?stone_dest)
+
       (scan-at ?start)
       (scan-required)
-      )
+    )
   )
 
   ;; ======================================================
   ;; FORCED ACTIONS: ONE-TICK CELL UPDATE IN SCAN ORDER
   ;; ======================================================
 
-
-  (:action fa-physics-stone-fall
+  (:action __forced__physics-stone-fall
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right - cell)
 
     :precondition (and
@@ -183,11 +208,11 @@
 
       (updated ?c)
       (updated ?down)
-    
+
     )
   )
 
-  (:action fa-physics-gem-fall
+  (:action __forced__physics-gem-fall
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right - cell)
 
     :precondition (and
@@ -221,11 +246,11 @@
 
       (updated ?c)
       (updated ?down)
-    
+
     )
   )
 
-  (:action fa-physics-stone-roll-left
+  (:action __forced__physics-stone-roll-left
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right - cell)
 
     :precondition (and
@@ -261,18 +286,16 @@
     )
 
     :effect (and
-          (not (stone ?c))
-          (empty ?c)
-          (stone ?left)
-          (not (empty ?left))
+      (not (stone ?c))
+      (empty ?c)
+      (stone ?left)
+      (not (empty ?left))
 
-          (updated ?c)
-          (updated ?left)
-    
+      (updated ?c)
     )
   )
 
-  (:action fa-physics-gem-roll-left
+  (:action __forced__physics-gem-roll-left
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right - cell)
 
     :precondition (and
@@ -308,18 +331,16 @@
     )
 
     :effect (and
-          (not (gem ?c))
-          (empty ?c)
-          (gem ?left)
-          (not (empty ?left))
+      (not (gem ?c))
+      (empty ?c)
+      (gem ?left)
+      (not (empty ?left))
 
-          (updated ?c)
-          (updated ?left)
-    
+      (updated ?c)
     )
   )
 
-  (:action fa-physics-stone-roll-right
+  (:action __forced__physics-stone-roll-right
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right - cell)
 
     :precondition (and
@@ -363,17 +384,17 @@
     )
 
     :effect (and
-          (not (stone ?c))
-          (empty ?c)
-          (stone ?right)
-          (not (empty ?right))
+      (not (stone ?c))
+      (empty ?c)
+      (stone ?right)
+      (not (empty ?right))
 
-          (updated ?c)
-          (updated ?right)
+      (updated ?c)
+      (updated ?right)
     )
   )
 
-  (:action fa-physics-gem-roll-right
+  (:action __forced__physics-gem-roll-right
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right - cell)
 
     :precondition (and
@@ -416,19 +437,19 @@
     )
 
     :effect (and
-          (not (gem ?c))
-          (empty ?c)
-          (gem ?right)
-          (not (empty ?right))
+      (not (gem ?c))
+      (empty ?c)
+      (gem ?right)
+      (not (empty ?right))
 
-          (updated ?c)
-          (updated ?right)
-    
+      (updated ?c)
+      (updated ?right)
+
     )
   )
-  
+
   ;; No-op cases split by content to avoid DNF blow-up
-  (:action fa-physics-stone-noop
+  (:action __forced__physics-stone-noop
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right - cell)
     :precondition (and
       (scan-at ?c)
@@ -466,7 +487,7 @@
     :effect (and (updated ?c))
   )
 
-  (:action fa-physics-gem-noop
+  (:action __forced__physics-gem-noop
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right - cell)
     :precondition (and
       (scan-at ?c)
@@ -504,7 +525,7 @@
     :effect (and (updated ?c))
   )
 
-  (:action fa-physics-other-noop
+  (:action __forced__physics-other-noop
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right - cell)
     :precondition (and
       (scan-at ?c)
@@ -526,7 +547,7 @@
 
   ;; -------- Advance scan pointer to next cell --------
 
-  (:action fa-advance-scan
+  (:action __forced__advance-scan
     :parameters (?c ?next - real-cell)
     :precondition (and
       (scan-at ?c)
@@ -542,7 +563,7 @@
 
   ;; -------- End-of-tick: at last cell, updated, flip parity --------
 
-  (:action fa-end-tick
+  (:action __forced__end-tick
     :parameters (?c - real-cell)
     :precondition (and
       (scan-at ?c)

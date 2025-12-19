@@ -193,23 +193,13 @@ def write_direction_plan(path: Path, actions: List[Tuple[str, List[str]]]) -> No
     """
     tokens: List[str] = []
     for name, args in actions:
-        if name.lower()[0:2] == "fa":
+        if name.lower()[0:2] == "fa" or "__forced__" in name.lower():
             continue
         if len(args) >= 3:
             direction = _dir_from_coords(args[1], args[2])
             if direction:
                 tokens.append(direction)
                 continue
-        # fallback: use action name keywords
-        lname = name.lower()
-        if "up" in lname:
-            tokens.append("up")
-        elif "down" in lname:
-            tokens.append("down")
-        elif "left" in lname:
-            tokens.append("left")
-        elif "right" in lname:
-            tokens.append("right")
     if tokens:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(f"({t})" for t in tokens) + "\n", encoding="utf-8")
