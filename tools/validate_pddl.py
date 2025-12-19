@@ -93,12 +93,17 @@ def _token_from_plan_line(raw: str) -> Optional[str]:
     return token.lower() if token else None
 
 
-def detect_human_plan_format(plan_path: Path) -> str:
+def iter_plan_tokens(plan_path: Path) -> List[str]:
     tokens: List[str] = []
     for raw in plan_path.read_text(encoding="utf-8", errors="replace").splitlines():
         token = _token_from_plan_line(raw)
         if token:
             tokens.append(token)
+    return tokens
+
+
+def detect_human_plan_format(plan_path: Path) -> str:
+    tokens = iter_plan_tokens(plan_path)
     if not tokens:
         raise ValueError(f"No usable actions found in plan: {plan_path}")
     if all(token in _DIRECTION_ALIASES for token in tokens):
@@ -121,6 +126,22 @@ def read_direction_plan(plan_path: Path) -> List[str]:
     if not directions:
         raise ValueError(f"No usable actions found in plan: {plan_path}")
     return directions
+
+
+def classify_plan_file(plan_path: Path) -> Tuple[str, Optional[str]]:
+    """
+    Returns (mode, human_format).
+      mode: "plan" or "human"
+      human_format: "directions" | "actions" | None
+    """
+    tokens = iter_plan_tokens(plan_path)
+    if not tokens:
+        raise ValueError(f"No usable actions found in plan: {plan_path}")
+    if any(is_forced_action_name(token) for token in tokens):
+        return "plan", None
+    if all(token in _DIRECTION_ALIASES for token in tokens):
+        return "human", "directions"
+    return "human", "actions"
 
 
 # -------------------- SAS parsing --------------------
