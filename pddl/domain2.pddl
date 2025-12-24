@@ -5,6 +5,10 @@
     cell agent real-cell border-cell - cell
   )
 
+  (:functions
+  (total-cost)
+ )
+
   (:predicates
     ;; layout / topology
     (up ?from ?to - cell)
@@ -71,6 +75,8 @@
 
       (scan-at ?start)
       (scan-required)
+      (increase (total-cost) 1)
+
     )
 
   )
@@ -103,6 +109,8 @@
 
       (scan-at ?start)
       (scan-required)
+
+      (increase (total-cost) 1)
     )
   )
 
@@ -136,6 +144,8 @@
 
       (scan-at ?start)
       (scan-required)
+      (increase (total-cost) 1)
+
     )
   )
 
@@ -170,6 +180,8 @@
 
       (scan-at ?start)
       (scan-required)
+      (increase (total-cost) 1)
+
     )
   )
 
@@ -571,6 +583,7 @@
     :precondition (and
       (scan-at ?c)
       (last-cell ?c)
+      (forall (?cc - border-cell) (not (empty ?cc)))
     )
     :effect (and
       ;; remove scan pointer: tick finished

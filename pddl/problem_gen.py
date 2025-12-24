@@ -240,16 +240,20 @@ def generate_pddl_problem(
     pddl = f"""\
 (define (problem {problem_name})
   (:domain {domain_name})
+  (:requirements :typing :negative-preconditions :action-costs)
   (:objects
 {chr(10).join(obj_lines)}
   )
   (:init
+  (= (total-cost) 0)
 {chr(10).join(init_lines)}
   )
   (:goal
   (and
 {chr(10).join(goal_lines)}
   ))
+  (:metric minimize (total-cost))
+
 )
 """
     return pddl

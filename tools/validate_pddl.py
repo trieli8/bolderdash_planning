@@ -601,8 +601,8 @@ def launch_trace_viewer(native: List[NativeStep],
 
 # -------------------- Comparison --------------------
 
-def compare_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]]) -> int:
-    mismatches = 0
+def diff_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]]) -> List[str]:
+    diffs: List[str] = []
     length = min(len(native), len(pddl_trace))
     for i in range(length):
         n = native[i]
@@ -617,14 +617,20 @@ def compare_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int
         if n.dirt != dirt:
             errs.append(f"dirt {sorted(n.dirt)} != {sorted(dirt)}")
         if errs:
-            print(f"[MISMATCH] step {i}: " + "; ".join(errs))
-            mismatches += 1
+            diffs.append(f"step {i}: " + "; ".join(errs))
     if len(native) != len(pddl_trace):
-        print(f"[MISMATCH] trace length native={len(native)} pddl={len(pddl_trace)}")
-        mismatches += 1
-    if mismatches == 0:
+        diffs.append(f"trace length native={len(native)} pddl={len(pddl_trace)}")
+    return diffs
+
+
+def compare_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]]) -> int:
+    diffs = diff_traces(native, pddl_trace)
+    if diffs:
+        for diff in diffs:
+            print(f"[MISMATCH] {diff}")
+    else:
         print("[OK] traces match")
-    return mismatches
+    return len(diffs)
 
 
 def dump_pddl_trace(path: Path, actions: List[Tuple[str, List[str]]], trace: List[Tuple[int, Set[int], Set[int], Set[int]]]) -> None:
@@ -639,6 +645,116 @@ def dump_pddl_trace(path: Path, actions: List[Tuple[str, List[str]]], trace: Lis
         }))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def prepare_problem_and_level(problem_input: Path) -> Tuple[Path, Path, Optional[tempfile.TemporaryDirectory]]:
+    temp_problem_dir: Optional[tempfile.TemporaryDirectory] = None
+    if problem_input.suffix.lower() == ".txt":
+        level_path = problem_input
+        problem_name = problem_input.stem
+        gen_py = repo_root() / "pddl" / "problem_gen.py"
+        if not gen_py.exists():
+            raise FileNotFoundError(f"problem_gen.py not found at {gen_py}")
+        temp_problem_dir = tempfile.TemporaryDirectory(prefix="gen_problem_")
+        problem = Path(temp_problem_dir.name) / f"{problem_name}.pddl"
+        cmd = [sys.executable, str(gen_py), str(problem_input), "-p", problem_name]
+        rc = subprocess.run(cmd, text=True, capture_output=True)
+        if rc.returncode != 0:
+            raise RuntimeError(f"problem_gen failed (rc={rc.returncode}): {rc.stderr or rc.stdout}")
+        problem.write_text(rc.stdout, encoding="utf-8")
+        return problem, level_path, temp_problem_dir
+
+    problem = problem_input
+    cand = problem.with_suffix(".txt")
+    default_level = repo_root() / "pddl" / "level.txt"
+    if cand.exists():
+        level_path = cand
+    elif default_level.exists():
+        level_path = default_level
+    else:
+        raise FileNotFoundError("Level file required for stones_trace (provide problem as .txt or add <problem>.txt or pddl/level.txt)")
+    return problem, level_path, temp_problem_dir
+
+
+def build_plan_actions_from_file(
+    plan_path: Path,
+    ops: List[SASOp],
+    init_state: List[int],
+    *,
+    human_plan_format: str = "auto",
+    treat_as_human: Optional[bool] = None,
+) -> List[Tuple[str, List[str]]]:
+    if treat_as_human is None:
+        mode, fmt = classify_plan_file(plan_path)
+        if mode == "plan":
+            return read_plan(plan_path)
+        human_plan_format = fmt or human_plan_format
+        treat_as_human = True
+
+    if treat_as_human:
+        fmt = human_plan_format
+        if fmt == "auto":
+            fmt = detect_human_plan_format(plan_path)
+        if fmt == "directions":
+            directions = read_direction_plan(plan_path)
+            return expand_directions_with_forced(directions, ops, init_state)
+        user_actions = read_plan(plan_path)
+        return expand_actions_with_forced(user_actions, ops, init_state)
+
+    return read_plan(plan_path)
+
+
+def build_pddl_trace(
+    vars_out: List[SASVar],
+    init_state: List[int],
+    ops: List[SASOp],
+    plan_actions: List[Tuple[str, List[str]]],
+) -> List[Tuple[int, Set[int], Set[int], Set[int]]]:
+    op_map = build_op_map(ops)
+    state = list(init_state)
+    pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]] = []
+    atoms = extract_state_atoms(vars_out, state)
+    agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
+    pddl_trace.append((agent, gems, stones, dirt))
+
+    for (name, args_list) in plan_actions:
+        op = op_map.get((name, tuple(args_list)))
+        if not op:
+            raise ValueError(f"Missing operator for action: {name} {' '.join(args_list)}")
+        apply(op, state)
+        atoms = extract_state_atoms(vars_out, state)
+        agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
+        if "__forced__end-tick" == op.name_tokens[0]:
+            pddl_trace.append((agent or -1, gems, stones, dirt))
+    return pddl_trace
+
+
+def validate_plan_diff(
+    domain: Path,
+    level: Path,
+    plan: Path,
+    *,
+    timeout: Optional[int] = None,
+) -> List[str]:
+    domain = domain.resolve()
+    level_input = level.resolve()
+    plan_path = plan.resolve()
+    problem, level_path, temp_problem_dir = prepare_problem_and_level(level_input)
+    try:
+        sas_text = run_translate(domain, problem, timeout)
+        vars_out, init_state, ops = parse_sas(sas_text)
+        plan_actions = build_plan_actions_from_file(plan_path, ops, init_state)
+        with tempfile.TemporaryDirectory(prefix="play_plan_") as td:
+            play_plan_path = Path(td) / "plan.play"
+            write_direction_plan(play_plan_path, plan_actions)
+            if not play_plan_path.exists():
+                play_plan_path.write_text("", encoding="utf-8")
+            pddl_trace = build_pddl_trace(vars_out, init_state, ops, plan_actions)
+            native_steps = run_stones_trace(play_plan_path, level_path, timeout)
+        return diff_traces(native_steps, pddl_trace)
+    finally:
+        if temp_problem_dir is not None:
+            temp_problem_dir.cleanup()
 
 
 def main() -> int:
@@ -664,37 +780,11 @@ def main() -> int:
     domain = args.domain.resolve()
     problem_input = args.problem.resolve()
 
-    # If problem is a level .txt, generate a temp PDDL and remember the level path.
-    temp_problem_dir: Optional[tempfile.TemporaryDirectory] = None
-    if problem_input.suffix.lower() == ".txt":
-        level_path = problem_input
-        problem_name = problem_input.stem
-        gen_py = repo_root() / "pddl" / "problem_gen.py"
-        if not gen_py.exists():
-            sys.stderr.write(f"[ERR] problem_gen.py not found at {gen_py}\n")
-            return 1
-        temp_problem_dir = tempfile.TemporaryDirectory(prefix="gen_problem_")
-        problem = Path(temp_problem_dir.name) / f"{problem_name}.pddl"
-        cmd = [sys.executable, str(gen_py), str(problem_input), "-p", problem_name]
-        rc = subprocess.run(cmd, text=True, capture_output=True)
-        if rc.returncode != 0:
-            sys.stderr.write(f"[ERR] problem_gen failed (rc={rc.returncode})\n")
-            sys.stderr.write(rc.stdout or "")
-            sys.stderr.write(rc.stderr or "")
-            return 1
-        problem.write_text(rc.stdout, encoding="utf-8")
-    else:
-        problem = problem_input
-        # Try to find a level txt alongside the problem or fallback to pddl/level.txt
-        cand = problem.with_suffix(".txt")
-        default_level = repo_root() / "pddl" / "level.txt"
-        if cand.exists():
-            level_path = cand
-        elif default_level.exists():
-            level_path = default_level
-        else:
-            sys.stderr.write("[ERR] Level file required for stones_trace (provide problem as .txt or add <problem>.txt or pddl/level.txt)\n")
-            return 1
+    try:
+        problem, level_path, temp_problem_dir = prepare_problem_and_level(problem_input)
+    except Exception as e:
+        sys.stderr.write(f"[ERR] {e}\n")
+        return 1
 
     plan_path: Optional[Path] = args.plan.resolve() if args.plan else None
     human_plan_path: Optional[Path] = args.human_plan.resolve() if args.human_plan else None
@@ -724,18 +814,15 @@ def main() -> int:
 
     sas_text = run_translate(domain, problem, args.timeout)
     vars_out, init_state, ops = parse_sas(sas_text)
-    op_map = build_op_map(ops)
     if human_plan_path:
         try:
-            fmt = args.human_plan_format
-            if fmt == "auto":
-                fmt = detect_human_plan_format(human_plan_path)
-            if fmt == "directions":
-                directions = read_direction_plan(human_plan_path)
-                plan_actions = expand_directions_with_forced(directions, ops, init_state)
-            else:
-                user_actions = read_plan(human_plan_path)
-                plan_actions = expand_actions_with_forced(user_actions, ops, init_state)
+            plan_actions = build_plan_actions_from_file(
+                human_plan_path,
+                ops,
+                init_state,
+                human_plan_format=args.human_plan_format,
+                treat_as_human=True,
+            )
         except Exception as e:
             sys.stderr.write(f"[ERR] Failed to expand human plan: {e}\n")
             return 1
@@ -743,34 +830,23 @@ def main() -> int:
         if plan_path is None:
             sys.stderr.write("[ERR] Plan path is required if --human-plan is not provided.\n")
             return 1
-        plan_actions = read_plan(plan_path)
+        plan_actions = build_plan_actions_from_file(
+            plan_path,
+            ops,
+            init_state,
+            treat_as_human=False,
+        )
 
     play_plan_path = Path(tempfile.mkdtemp(prefix="play_plan_")) / "plan.play"
     write_direction_plan(play_plan_path, plan_actions)
     if not play_plan_path.exists():
         play_plan_path.write_text("", encoding="utf-8")
 
-    state = list(init_state)
-    pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]] = []
-    atoms = extract_state_atoms(vars_out, state)
-    agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
-    pddl_trace.append((agent, gems, stones, dirt))
-
-    for (name, args_list) in plan_actions:
-        op = op_map.get((name, tuple(args_list)))
-        if not op:
-            print(f"[ERR] Missing operator for action: {name} {' '.join(args_list)}")
-            return 1
-        # TODO WARNING: skipping applicability check
-        # if not applicable(op, state):
-        #     print(f"[ERR] Inapplicable action: {name} {' '.join(args_list)}")
-        #     return 1
-        apply(op, state)
-        atoms = extract_state_atoms(vars_out, state)
-        agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
-        # if '__forced__' != op.name_tokens[0][0:3]:
-        if "__forced__end-tick" == op.name_tokens[0]:
-            pddl_trace.append((agent or -1, gems, stones, dirt))
+    try:
+        pddl_trace = build_pddl_trace(vars_out, init_state, ops, plan_actions)
+    except Exception as e:
+        print(f"[ERR] {e}")
+        return 1
 
     if args.native_trace:
         native_steps = load_native_trace(args.native_trace.resolve())

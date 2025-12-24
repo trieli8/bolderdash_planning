@@ -102,6 +102,17 @@ python tools/validate_pddl.py --domain pddl/domain.pddl --problem pddl/problem.p
 - If the problem is a `.txt` level, it is converted through `pddl/problem_gen.py`; a `.txt` alongside the PDDL problem is also used for native traces.
 - Compares the native stones_trace output to the PDDL simulation and reports mismatches.
 
+### Batch validate levels + plans
+
+```bash
+python tools/validate_batch.py --levels-dir pddl --plans-dir plans
+# or use one folder for both:
+python tools/validate_batch.py --root /path/to/folder
+```
+
+- Matches levels to plans by level filename stem (e.g., `level.txt` -> `plans/level/*.plan`).
+- Automatically detects if a plan is a full plan (with forced actions) or a human plan (directions/actions).
+
 ### Generate PDDL problem from level text
 
 ```bash
