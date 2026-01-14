@@ -149,6 +149,7 @@ def classify_plan_file(plan_path: Path) -> Tuple[str, Optional[str]]:
 @dataclass
 class SASVar:
     name: str
+    axiom_layer: int
     atoms: List[str]  # length = domain size (excluding <none>)
 
 
@@ -156,7 +157,7 @@ class SASVar:
 class SASOp:
     name_tokens: List[str]
     pre: List[Tuple[int, int]]
-    eff: List[Tuple[int, int]]
+    eff: List["SASEffect"]
 
     @property
     def key(self) -> Tuple[str, Tuple[str, ...]]:
@@ -170,6 +171,30 @@ class SASOp:
             return False
         name = self.name_tokens[0].lower()
         return name.startswith("__forced__") or name.startswith("fa_") or name.startswith("forced-")
+
+
+@dataclass
+class SASEffect:
+    var: int
+    old: int
+    new: int
+    conds: List[Tuple[int, int]]
+
+
+@dataclass
+class SASRule:
+    conds: List[Tuple[int, int]]
+    var: int
+    new: int
+    old: int
+
+
+@dataclass
+class SASAxioms:
+    derived_vars: List[int]
+    defaults: Dict[int, int]
+    rules_by_layer: Dict[int, List[SASRule]]
+    layers: List[int]
 
 
 def run_translate(domain: Path, problem: Path, timeout: Optional[int]) -> str:
@@ -199,7 +224,7 @@ def run_translate(domain: Path, problem: Path, timeout: Optional[int]) -> str:
         return sas_file.read_text(encoding="utf-8", errors="replace")
 
 
-def parse_sas(sas_text: str) -> Tuple[List[SASVar], List[int], List[SASOp]]:
+def parse_sas(sas_text: str) -> Tuple[List[SASVar], List[int], List[SASOp], Optional[SASAxioms]]:
     lines = [ln.strip() for ln in sas_text.splitlines() if ln.strip() != ""]
     it = iter(lines)
 
@@ -220,14 +245,14 @@ def parse_sas(sas_text: str) -> Tuple[List[SASVar], List[int], List[SASOp]]:
     for _ in range(var_count):
         assert next(it, "") == "begin_variable"
         name = next(it, "").strip()
-        next(it, None)  # axiom layer
+        axiom_layer = int(next(it, "-1"))
         domain_size = int(next(it, "0"))
         atoms: List[str] = []
         for _ in range(domain_size):
             atom_line = next(it, "").strip()
             atoms.append(atom_line)
         assert next(it, "") == "end_variable"
-        vars_out.append(SASVar(name=name, atoms=atoms))
+        vars_out.append(SASVar(name=name, axiom_layer=axiom_layer, atoms=atoms))
 
     mutex_count = int(next(it, "0"))
     for _ in range(mutex_count):
@@ -253,7 +278,7 @@ def parse_sas(sas_text: str) -> Tuple[List[SASVar], List[int], List[SASOp]]:
     ops: List[SASOp] = []
     for _ in range(op_count):
         if next(it, "") != "begin_operator":
-            break
+            raise ValueError("SAS parse: expected begin_operator")
         name_line = next(it, "").strip()
         name_tokens = name_line.replace("(", "").replace(")", "").split()
 
@@ -264,7 +289,7 @@ def parse_sas(sas_text: str) -> Tuple[List[SASVar], List[int], List[SASOp]]:
             pre.append((int(v), int(val)))
 
         pe_count = int(next(it, "0"))
-        eff: List[Tuple[int, int]] = []
+        eff: List[SASEffect] = []
         for _ in range(pe_count):
             parts = next(it, "").split()
             if not parts:
@@ -283,13 +308,65 @@ def parse_sas(sas_text: str) -> Tuple[List[SASVar], List[int], List[SASOp]]:
             v = int(parts[idx]); old = int(parts[idx + 1]); new = int(parts[idx + 2])
             if old != -1:
                 pre.append((v, old))
-            pre.extend(conds)
-            eff.append((v, new))
+            eff.append(SASEffect(v, old, new, conds))
         next(it, None)  # cost
         next(it, None)  # end_operator
         ops.append(SASOp(name_tokens, pre, eff))
 
-    return vars_out, init_state, ops
+    rules: List[SASRule] = []
+    rule_count_raw = next(it, None)
+    if rule_count_raw is not None:
+        rule_count = int(rule_count_raw)
+        for _ in range(rule_count):
+            if next(it, "") != "begin_rule":
+                raise ValueError("SAS parse: expected begin_rule")
+            cond_count = int(next(it, "0"))
+            conds: List[Tuple[int, int]] = []
+            for _ in range(cond_count):
+                v, val = next(it, "0 0").split()
+                conds.append((int(v), int(val)))
+            effect_parts = next(it, "").split()
+            if len(effect_parts) < 3:
+                raise ValueError("SAS parse: malformed rule effect")
+            var = int(effect_parts[0])
+            new = int(effect_parts[1])
+            old = int(effect_parts[2])
+            if next(it, "") != "end_rule":
+                raise ValueError("SAS parse: expected end_rule")
+            rules.append(SASRule(conds=conds, var=var, new=new, old=old))
+
+    axioms = build_axioms(vars_out, rules)
+    return vars_out, init_state, ops, axioms
+
+
+def build_axioms(vars_out: List[SASVar], rules: List[SASRule]) -> Optional[SASAxioms]:
+    derived_vars = [idx for idx, var in enumerate(vars_out) if var.axiom_layer >= 0]
+    if not derived_vars or not rules:
+        return None
+    defaults = {idx: len(vars_out[idx].atoms) - 1 for idx in derived_vars}
+    rules_by_layer: Dict[int, List[SASRule]] = {}
+    for rule in rules:
+        layer = vars_out[rule.var].axiom_layer
+        rules_by_layer.setdefault(layer, []).append(rule)
+    layers = sorted(rules_by_layer)
+    return SASAxioms(derived_vars=derived_vars, defaults=defaults, rules_by_layer=rules_by_layer, layers=layers)
+
+
+def apply_axioms(state: List[int], axioms: Optional[SASAxioms]) -> None:
+    if not axioms or not axioms.rules_by_layer:
+        return
+    for var in axioms.derived_vars:
+        state[var] = axioms.defaults[var]
+    for layer in axioms.layers:
+        changed = True
+        while changed:
+            changed = False
+            for rule in axioms.rules_by_layer[layer]:
+                if any(state[c_var] != c_val for c_var, c_val in rule.conds):
+                    continue
+                if state[rule.var] == rule.old and rule.old != rule.new:
+                    state[rule.var] = rule.new
+                    changed = True
 
 
 def normalise_problem_name(problem: Path) -> str:
@@ -306,12 +383,26 @@ def normalise_problem_name(problem: Path) -> str:
 # -------------------- Simulation --------------------
 
 def applicable(op: SASOp, state: List[int]) -> bool:
-    return all(state[v] == val for v, val in op.pre)
+    if not op.pre:
+        return True
+    allowed: Dict[int, Set[int]] = {}
+    for v, val in op.pre:
+        vals = allowed.get(v)
+        if vals is None:
+            allowed[v] = {val}
+        else:
+            vals.add(val)
+    return all(state[v] in vals for v, vals in allowed.items())
 
 
 def apply(op: SASOp, state: List[int]) -> None:
-    for v, val in op.eff:
-        state[v] = val
+    base = list(state)
+    for eff in op.eff:
+        if eff.old != -1 and base[eff.var] != eff.old:
+            continue
+        if any(base[c_var] != c_val for c_var, c_val in eff.conds):
+            continue
+        state[eff.var] = eff.new
 
 
 def build_op_map(ops: List[SASOp]) -> Dict[Tuple[str, Tuple[str, ...]], SASOp]:
@@ -358,15 +449,22 @@ def run_forced_actions(
     forced_ops: List[SASOp],
     state: List[int],
     *,
+    axioms: Optional[SASAxioms] = None,
     max_steps: int = 10000,
 ) -> List[Tuple[str, List[str]]]:
     executed: List[Tuple[str, List[str]]] = []
     steps = 0
     while steps < max_steps:
+        apply_axioms(state, axioms)
         applicable_ops = [op for op in forced_ops if applicable(op, state)]
         if not applicable_ops:
             break
-        for op in sorted(applicable_ops, key=lambda o: " ".join(o.name_tokens)):
+        non_end = [op for op in applicable_ops if op.name_tokens and op.name_tokens[0] != "__forced__end_tick"]
+        if non_end:
+            ops_to_apply = non_end
+        else:
+            ops_to_apply = applicable_ops
+        for op in sorted(ops_to_apply, key=lambda o: " ".join(o.name_tokens)):
             apply(op, state)
             executed.append(_action_from_op(op))
             steps += 1
@@ -381,6 +479,7 @@ def expand_actions_with_forced(
     user_actions: List[Tuple[str, List[str]]],
     ops: List[SASOp],
     init_state: List[int],
+    axioms: Optional[SASAxioms] = None,
 ) -> List[Tuple[str, List[str]]]:
     if not user_actions:
         raise ValueError("No usable actions found in human plan.")
@@ -390,8 +489,9 @@ def expand_actions_with_forced(
     forced_ops = [op for op in ops if op.is_forced]
     op_map = build_op_map(ops)
     executed: List[Tuple[str, List[str]]] = []
-    executed.extend(run_forced_actions(forced_ops, state))
+    executed.extend(run_forced_actions(forced_ops, state, axioms=axioms))
     for name, args_list in user_actions:
+        apply_axioms(state, axioms)
         key = (name.lower(), tuple(a.lower() for a in args_list))
         op = op_map.get(key)
         if not op:
@@ -400,8 +500,9 @@ def expand_actions_with_forced(
             raise ValueError(f"Inapplicable action: {name} {' '.join(args_list)}")
         apply(op, state)
         executed.append((name.lower(), [a.lower() for a in args_list]))
-        executed.extend(run_forced_actions(forced_ops, state))
-    executed.extend(run_forced_actions(forced_ops, state))
+        executed.extend(run_forced_actions(forced_ops, state, axioms=axioms))
+    executed.extend(run_forced_actions(forced_ops, state, axioms=axioms))
+    print(executed)
     return executed
 
 
@@ -409,6 +510,7 @@ def expand_directions_with_forced(
     directions: List[str],
     ops: List[SASOp],
     init_state: List[int],
+    axioms: Optional[SASAxioms] = None,
 ) -> List[Tuple[str, List[str]]]:
     state = list(init_state)
     forced_ops = [op for op in ops if op.is_forced]
@@ -426,8 +528,9 @@ def expand_directions_with_forced(
         seen.add(key)
         ops_by_dir.setdefault(direction, []).append(op)
     executed: List[Tuple[str, List[str]]] = []
-    executed.extend(run_forced_actions(forced_ops, state))
+    executed.extend(run_forced_actions(forced_ops, state, axioms=axioms))
     for direction in directions:
+        apply_axioms(state, axioms)
         candidates = [op for op in ops_by_dir.get(direction, []) if applicable(op, state)]
         if not candidates:
             raise ValueError(f"No applicable action found for direction '{direction}'.")
@@ -437,8 +540,9 @@ def expand_directions_with_forced(
         op = candidates[0]
         apply(op, state)
         executed.append(_action_from_op(op))
-        executed.extend(run_forced_actions(forced_ops, state))
-    executed.extend(run_forced_actions(forced_ops, state))
+        executed.extend(run_forced_actions(forced_ops, state, axioms=axioms))
+    executed.extend(run_forced_actions(forced_ops, state, axioms=axioms))
+    print([e[0] for e in executed])
     return executed
 
 
@@ -680,6 +784,7 @@ def build_plan_actions_from_file(
     plan_path: Path,
     ops: List[SASOp],
     init_state: List[int],
+    axioms: Optional[SASAxioms] = None,
     *,
     human_plan_format: str = "auto",
     treat_as_human: Optional[bool] = None,
@@ -697,9 +802,9 @@ def build_plan_actions_from_file(
             fmt = detect_human_plan_format(plan_path)
         if fmt == "directions":
             directions = read_direction_plan(plan_path)
-            return expand_directions_with_forced(directions, ops, init_state)
+            return expand_directions_with_forced(directions, ops, init_state, axioms=axioms)
         user_actions = read_plan(plan_path)
-        return expand_actions_with_forced(user_actions, ops, init_state)
+        return expand_actions_with_forced(user_actions, ops, init_state, axioms=axioms)
 
     return read_plan(plan_path)
 
@@ -709,6 +814,7 @@ def build_pddl_trace(
     init_state: List[int],
     ops: List[SASOp],
     plan_actions: List[Tuple[str, List[str]]],
+    axioms: Optional[SASAxioms] = None,
 ) -> List[Tuple[int, Set[int], Set[int], Set[int]]]:
     op_map = build_op_map(ops)
     state = list(init_state)
@@ -721,11 +827,16 @@ def build_pddl_trace(
         op = op_map.get((name, tuple(args_list)))
         if not op:
             raise ValueError(f"Missing operator for action: {name} {' '.join(args_list)}")
+        apply_axioms(state, axioms)
         apply(op, state)
         atoms = extract_state_atoms(vars_out, state)
         agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
-        if "__forced__end-tick" == op.name_tokens[0]:
+        if "__forced__end_tick" == op.name_tokens[0]:
             pddl_trace.append((agent or -1, gems, stones, dirt))
+
+    agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
+    pddl_trace.append((agent or -1, gems, stones, dirt))
+    
     return pddl_trace
 
 
@@ -742,14 +853,14 @@ def validate_plan_diff(
     problem, level_path, temp_problem_dir = prepare_problem_and_level(level_input)
     try:
         sas_text = run_translate(domain, problem, timeout)
-        vars_out, init_state, ops = parse_sas(sas_text)
-        plan_actions = build_plan_actions_from_file(plan_path, ops, init_state)
+        vars_out, init_state, ops, axioms = parse_sas(sas_text)
+        plan_actions = build_plan_actions_from_file(plan_path, ops, init_state, axioms=axioms)
         with tempfile.TemporaryDirectory(prefix="play_plan_") as td:
             play_plan_path = Path(td) / "plan.play"
             write_direction_plan(play_plan_path, plan_actions)
             if not play_plan_path.exists():
                 play_plan_path.write_text("", encoding="utf-8")
-            pddl_trace = build_pddl_trace(vars_out, init_state, ops, plan_actions)
+            pddl_trace = build_pddl_trace(vars_out, init_state, ops, plan_actions, axioms=axioms)
             native_steps = run_stones_trace(play_plan_path, level_path, timeout)
         return diff_traces(native_steps, pddl_trace)
     finally:
@@ -813,13 +924,14 @@ def main() -> int:
             return 1
 
     sas_text = run_translate(domain, problem, args.timeout)
-    vars_out, init_state, ops = parse_sas(sas_text)
+    vars_out, init_state, ops, axioms = parse_sas(sas_text)
     if human_plan_path:
         try:
             plan_actions = build_plan_actions_from_file(
                 human_plan_path,
                 ops,
                 init_state,
+                axioms=axioms,
                 human_plan_format=args.human_plan_format,
                 treat_as_human=True,
             )
@@ -834,6 +946,7 @@ def main() -> int:
             plan_path,
             ops,
             init_state,
+            axioms=axioms,
             treat_as_human=False,
         )
 
@@ -843,7 +956,7 @@ def main() -> int:
         play_plan_path.write_text("", encoding="utf-8")
 
     try:
-        pddl_trace = build_pddl_trace(vars_out, init_state, ops, plan_actions)
+        pddl_trace = build_pddl_trace(vars_out, init_state, ops, plan_actions, axioms=axioms)
     except Exception as e:
         print(f"[ERR] {e}")
         return 1

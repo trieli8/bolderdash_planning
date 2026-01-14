@@ -234,7 +234,7 @@ def generate_pddl_problem(
     # :goal
     # ------------------------------------------------------------------
     # Simple default: eventually get a gem
-    goal_lines = ["    (got-gem)"]
+    goal_lines = ["    (got-gem)", "    (not (update-required))"]
 
     # Assemble full PDDL
     pddl = f"""\
