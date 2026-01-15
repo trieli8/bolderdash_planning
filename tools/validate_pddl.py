@@ -11,7 +11,7 @@ Usage:
 Steps:
   - Run FD translator to get SAS.
   - Parse plan actions and SAS operators; simulate to build a PDDL trace.
-  - Load native trace (from stones_trace) and compare agent/gem/stone/dirt positions per step.
+  - Load native trace (from stones_trace) and compare agent/gem/stone/dirt/brick positions per step.
 """
 from __future__ import annotations
 
@@ -203,7 +203,18 @@ def run_translate(domain: Path, problem: Path, timeout: Optional[int]) -> str:
         raise FileNotFoundError(f"fast-downward.py not found at {fd_py}")
     with tempfile.TemporaryDirectory(prefix="fd_translate_") as td:
         sas_file = Path(td) / "output.sas"
-        cmd = [sys.executable, str(fd_py), "--translate", str(domain), str(problem), "--sas-file", str(sas_file)]
+        cmd = [
+            sys.executable,
+            str(fd_py),
+            "--translate",
+            str(domain),
+            str(problem),
+            "--sas-file",
+            str(sas_file),
+            "--translate-options",
+            "--keep-unreachable-facts",
+            "--keep-unimportant-variables",
+        ]
         try:
             subprocess.run(
                 cmd,
@@ -560,11 +571,13 @@ def extract_state_atoms(vars_out: List[SASVar], state: List[int]) -> List[str]:
     return atoms
 
 
-def cells_from_atoms(atoms: Iterable[str]) -> Tuple[Optional[int], Set[int], Set[int], Set[int], int, int]:
+def cells_from_atoms(atoms: Iterable[str]) -> Tuple[Optional[int], Set[int], Set[int], Set[int], Set[int], int, int]:
     agent: Optional[int] = None
     gems: Set[int] = set()
     stones: Set[int] = set()
     dirt: Set[int] = set()
+    brick: Set[int] = set()
+
     max_r = -1
     max_c = -1
 
@@ -604,11 +617,34 @@ def cells_from_atoms(atoms: Iterable[str]) -> Tuple[Optional[int], Set[int], Set
             stones.add(idx)
         elif "dirt" in lower:
             dirt.add(idx)
+        elif "brick" in lower:
+            brick.add(idx)
 
-    return agent, gems, stones, dirt, rows, cols
+    return agent, gems, stones, dirt, brick, rows, cols
 
 
 # -------------------- Native trace --------------------
+
+def parse_level_bricks(level: Path) -> Set[int]:
+    try:
+        parts = [p.strip() for p in level.read_text(encoding="utf-8", errors="replace").split("|") if p.strip()]
+        if len(parts) < 4:
+            return set()
+        rows = int(parts[0])
+        cols = int(parts[1])
+        expected = rows * cols
+        cells = parts[4:]
+        if len(cells) < expected:
+            return set()
+        brick_ids = {7, 8, 18, 19, 20, 21, 22}
+        bricks = set()
+        for idx, cell in enumerate(cells[:expected]):
+            if int(cell) in brick_ids:
+                bricks.add(idx)
+        return bricks
+    except Exception:
+        return set()
+
 
 @dataclass
 class NativeStep:
@@ -617,9 +653,18 @@ class NativeStep:
     gems: Set[int]
     stones: Set[int]
     dirt: Set[int]
+    brick: Set[int]
+
+def _bricks_from_data(data: dict, base_bricks: Optional[Set[int]]) -> Set[int]:
+    raw = data.get("bricks")
+    if raw is None:
+        raw = data.get("brick")
+    if raw is None:
+        return set(base_bricks or [])
+    return set(int(x) for x in raw)
 
 
-def load_native_trace(path: Path) -> List[NativeStep]:
+def load_native_trace(path: Path, base_bricks: Optional[Set[int]] = None) -> List[NativeStep]:
     steps: List[NativeStep] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -632,12 +677,13 @@ def load_native_trace(path: Path) -> List[NativeStep]:
                 gems=set(int(x) for x in data.get("gems", [])),
                 stones=set(int(x) for x in data.get("stones", [])),
                 dirt=set(int(x) for x in data.get("dirt", [])),
+                brick=_bricks_from_data(data, base_bricks),
             )
         )
     return steps
 
 
-def parse_native_trace_text(text: str) -> List[NativeStep]:
+def parse_native_trace_text(text: str, base_bricks: Optional[Set[int]] = None) -> List[NativeStep]:
     steps: List[NativeStep] = []
     for line in text.splitlines():
         if not line.strip():
@@ -650,6 +696,7 @@ def parse_native_trace_text(text: str) -> List[NativeStep]:
                 gems=set(int(x) for x in data.get("gems", [])),
                 stones=set(int(x) for x in data.get("stones", [])),
                 dirt=set(int(x) for x in data.get("dirt", [])),
+                brick=_bricks_from_data(data, base_bricks),
             )
         )
     return steps
@@ -664,6 +711,7 @@ def dump_native_trace(path: Path, steps: List[NativeStep]) -> None:
             "gems": sorted(s.gems),
             "stones": sorted(s.stones),
             "dirt": sorted(s.dirt),
+            "brick": sorted(s.brick),
         }))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -680,11 +728,12 @@ def run_stones_trace(plan: Path, level: Path, timeout: Optional[int]) -> List[Na
         sys.stderr.write(proc.stdout or "")
         sys.stderr.write(proc.stderr or "")
         raise RuntimeError("stones_trace failed")
-    return parse_native_trace_text(proc.stdout)
+    base_bricks = parse_level_bricks(level)
+    return parse_native_trace_text(proc.stdout, base_bricks=base_bricks)
 
 
 def launch_trace_viewer(native: List[NativeStep],
-                        pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]],
+                        pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]],
                         actions: List[Tuple[str, List[str]]],
                         level_path: Path) -> None:
     viewer = repo_root() / "stonesandgem" / "build" / "bin" / "trace_viewer"
@@ -705,12 +754,12 @@ def launch_trace_viewer(native: List[NativeStep],
 
 # -------------------- Comparison --------------------
 
-def diff_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]]) -> List[str]:
+def diff_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]]) -> List[str]:
     diffs: List[str] = []
     length = min(len(native), len(pddl_trace))
     for i in range(length):
         n = native[i]
-        agent, gems, stones, dirt = pddl_trace[i]
+        agent, gems, stones, dirt, brick = pddl_trace[i]
         errs = []
         if n.agent != agent:
             errs.append(f"agent {n.agent} != {agent}")
@@ -720,6 +769,8 @@ def diff_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int], 
             errs.append(f"stones {sorted(n.stones)} != {sorted(stones)}")
         if n.dirt != dirt:
             errs.append(f"dirt {sorted(n.dirt)} != {sorted(dirt)}")
+        if n.brick != brick:
+            errs.append(f"brick {sorted(n.brick)} != {sorted(brick)}")
         if errs:
             diffs.append(f"step {i}: " + "; ".join(errs))
     if len(native) != len(pddl_trace):
@@ -727,7 +778,7 @@ def diff_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int], 
     return diffs
 
 
-def compare_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]]) -> int:
+def compare_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]]) -> int:
     diffs = diff_traces(native, pddl_trace)
     if diffs:
         for diff in diffs:
@@ -737,15 +788,16 @@ def compare_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int
     return len(diffs)
 
 
-def dump_pddl_trace(path: Path, actions: List[Tuple[str, List[str]]], trace: List[Tuple[int, Set[int], Set[int], Set[int]]]) -> None:
+def dump_pddl_trace(path: Path, actions: List[Tuple[str, List[str]]], trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]]) -> None:
     lines = []
-    for (act, (agent, gems, stones, dirt)) in zip(["init"] + [f"{n} {' '.join(a)}" for n, a in actions], trace):
+    for (act, (agent, gems, stones, dirt, brick)) in zip(["init"] + [f"{n} {' '.join(a)}" for n, a in actions], trace):
         lines.append(json.dumps({
             "action": act,
             "agent": agent,
             "gems": sorted(gems),
             "stones": sorted(stones),
             "dirt": sorted(dirt),
+            "brick": sorted(brick),
         }))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -815,13 +867,14 @@ def build_pddl_trace(
     ops: List[SASOp],
     plan_actions: List[Tuple[str, List[str]]],
     axioms: Optional[SASAxioms] = None,
-) -> List[Tuple[int, Set[int], Set[int], Set[int]]]:
+) -> List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]]:
     op_map = build_op_map(ops)
     state = list(init_state)
-    pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int]]] = []
+    pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]] = []
     atoms = extract_state_atoms(vars_out, state)
-    agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
-    pddl_trace.append((agent, gems, stones, dirt))
+    agent, gems, stones, dirt, brick, _, _ = cells_from_atoms(atoms)
+    pddl_trace.append((agent, gems, stones, dirt, brick))
+    op = None
 
     for (name, args_list) in plan_actions:
         op = op_map.get((name, tuple(args_list)))
@@ -830,12 +883,13 @@ def build_pddl_trace(
         apply_axioms(state, axioms)
         apply(op, state)
         atoms = extract_state_atoms(vars_out, state)
-        agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
+        agent, gems, stones, dirt, brick, _, _ = cells_from_atoms(atoms)
         if "__forced__end_tick" == op.name_tokens[0]:
-            pddl_trace.append((agent or -1, gems, stones, dirt))
+            pddl_trace.append((agent or -1, gems, stones, dirt, brick))
 
-    agent, gems, stones, dirt, _, _ = cells_from_atoms(atoms)
-    pddl_trace.append((agent or -1, gems, stones, dirt))
+    if op and "__forced__end_tick" != op.name_tokens[0]:
+        agent, gems, stones, dirt, brick, _, _ = cells_from_atoms(atoms)
+        pddl_trace.append((agent or -1, gems, stones, dirt, brick))
     
     return pddl_trace
 
@@ -909,6 +963,7 @@ def main() -> int:
             "--planner", "fd",
             "--domain", str(domain),
             "--problem", str(problem),
+            "--stream"
         ]
         print(f"[INFO] Generating plan via Fast Downward: {' '.join(gen_cmd)}")
         rc = subprocess.run(gen_cmd, text=True, capture_output=True)
@@ -919,6 +974,10 @@ def main() -> int:
             return 1
         plan_dir = repo_root() / "plans" / problem_name
         plan_path = plan_dir / "fd.plan"
+        if plan_path.read_text(encoding="utf-8", errors="replace") == '':
+            sys.stderr.write(f"[ERR] Problem not fessable. No plan found\n")
+            return 1
+        
         if not plan_path.exists():
             sys.stderr.write(f"[ERR] Generated plan not found at {plan_path}\n")
             return 1
@@ -962,7 +1021,7 @@ def main() -> int:
         return 1
 
     if args.native_trace:
-        native_steps = load_native_trace(args.native_trace.resolve())
+        native_steps = load_native_trace(args.native_trace.resolve(), base_bricks=parse_level_bricks(level_path))
     else:
         native_steps = run_stones_trace(play_plan_path, level_path, args.timeout)
     mismatches = compare_traces(native_steps, pddl_trace)

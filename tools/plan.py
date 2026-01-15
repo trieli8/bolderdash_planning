@@ -371,7 +371,7 @@ def solve_with_fd(
         if optimal:
             # Optimal: A* with IPDB heuristic (handles ADL after compilation better than lmcut alias).
             cmd = [sys.executable, str(fd_py), str(domain), str(problem),
-                   "--search", "astar(blind())"]
+                   "--search", "astar(merge_and_shrink())"]
             tag = "fd-opt"
         else:
             # Satisficing: default stops after first plan; optionally run an anytime loop.

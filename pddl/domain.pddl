@@ -129,10 +129,10 @@
     :precondition (and (agent-alive)
       (agent-at ?from)
       (or
-        (and (up ?from ?to) (up ?to ?stone_dest))
+        ; (and (up ?from ?to) (up ?to ?stone_dest))
         (and (left-of ?from ?to) (left-of ?to ?stone_dest))
         (and (right-of ?from ?to) (right-of ?to ?stone_dest))
-        (and (down ?from ?to) (down ?to ?stone_dest))
+        ; (and (down ?from ?to) (down ?to ?stone_dest))
       )
       (stone ?to)
       (empty ?stone_dest)
@@ -254,6 +254,18 @@
       (or (stone ?c) (gem ?c))
 
       (not (updated ?c))
+    )
+    :effect (and
+      (updated ?c)
+      (not (pending ?c))
+    )
+  )
+
+    (:action __forced__physics_agent_noop
+    :parameters (?c - real-cell)
+    :precondition (and
+      (update-required)
+      (agent-at ?c)
     )
     :effect (and
       (updated ?c)
