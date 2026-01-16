@@ -25,7 +25,10 @@
     (dirt ?c - cell)
     (stone ?c - cell)
     (gem ?c - cell)
+    (falling ?c - cell)
     (brick ?c - cell)
+    (was_empty ?c - real-cell)
+    (was_falling ?c - real-cell)
 
     ;; high-level state
     (agent-alive)
@@ -41,6 +44,18 @@
   ;; ======================================================
   ;; AGENT MOVEMENT
   ;; ======================================================
+
+  (:action move_noop
+    :parameters (?a - agent)
+    :precondition (and (agent-alive)
+      (not (update-required))
+    )
+    :effect (and
+      (update-required)
+      (increase (total-cost) 1)
+      (forall (?cc - real-cell) (when (or (stone ?cc) (gem ?cc)) (and (pending ?cc))))
+    )
+  )
 
   (:action move_empty
     :parameters (?a - agent ?from ?to - real-cell)
@@ -83,7 +98,6 @@
       (agent-at ?to)
 
       (not (dirt ?to))
-      (empty ?to)
 
       (empty ?from)
       (not (empty ?to))
@@ -114,13 +128,12 @@
       (not (empty ?to))
 
       (not (gem ?to))
-      (empty ?to)
+      (not (falling ?to))
 
       (got-gem)
       (update-required)
       (forall (?cc - real-cell) (when (or (stone ?cc) (gem ?cc)) (and (pending ?cc))))
       (increase (total-cost) 1)
-
     )
   )
 
@@ -143,10 +156,13 @@
       (agent-at ?to)
 
       (not (stone ?to))
+      (not (falling ?to))
       (empty ?to)
+      ; (was_empty ?to) TODO THINK ABOUT THIS
 
       (not (empty ?stone_dest))
       (stone ?stone_dest)
+      (not (falling ?stone_dest))
 
       (updated ?to)
       (update-required)
@@ -175,10 +191,14 @@
     )
     :effect (and
       (not (stone ?c))
+      (not (falling ?c))
       (empty ?c)
+      (when (falling ?c) (was_falling ?c))
 
       (stone ?down)
+      (falling ?down)
       (not (empty ?down))
+      (was_empty ?down)
 
       (updated ?down)
       (updated ?c)
@@ -201,10 +221,14 @@
     )
     :effect (and
       (not (gem ?c))
+      (not (falling ?c))
       (empty ?c)
+      (when (falling ?c) (was_falling ?c))
 
       (gem ?down)
+      (falling ?down)
       (not (empty ?down))
+      (was_empty ?down)
 
       (updated ?down)
       (updated ?c)
@@ -218,12 +242,14 @@
       (update-required)
       (down ?c ?down)
       (stone ?c)
-      (or (dirt ?down) (brick ?down) (updated ?down))
+      (or (dirt ?down) (updated ?down))
 
       (not (updated ?c))
     )
     :effect (and
       (updated ?c)
+      (not (falling ?c))
+      (when (falling ?c) (was_falling ?c))
       (not (pending ?c))
     )
   )
@@ -234,13 +260,15 @@
       (update-required)
       (down ?c ?down)
       (gem ?c)
-      (or (dirt ?down) (brick ?down) (updated ?down))
+      (or (dirt ?down) (updated ?down) (brick ?down))
 
 
       (not (updated ?c))
     )
     :effect (and
       (updated ?c)
+      (not (falling ?c))
+      (when (falling ?c) (was_falling ?c))
       (not (pending ?c))
     )
   )
@@ -252,32 +280,22 @@
       (down ?c ?down)
 
       (or (stone ?c) (gem ?c))
-
       (not (updated ?c))
     )
     :effect (and
       (updated ?c)
-      (not (pending ?c))
-    )
-  )
-
-    (:action __forced__physics_agent_noop
-    :parameters (?c - real-cell)
-    :precondition (and
-      (update-required)
-      (agent-at ?c)
-    )
-    :effect (and
-      (updated ?c)
+      (not (falling ?c))
+      (when (falling ?c) (was_falling ?c))
       (not (pending ?c))
     )
   )
 
   (:action __forced__physics_stone_roll_left
-    :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right - cell)
+    :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right ?danger_cell - cell)
 
     :precondition (and
       (update-required)
+      (right-of ?danger_cell ?left)
       (right-of ?left ?c)
       (right-of ?c ?right)
 
@@ -292,22 +310,32 @@
       (up ?right ?up_right)
 
       (stone ?c)
-      (or (stone ?down) (gem ?down) (brick ?down) (updated ?down) )
-      (empty ?left)
-      (or (empty ?down_left) (updated ?down_left))
-
-      
-      (not (updated ?left))
       (not (updated ?c))
 
+      (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
+      (not (falling ?down))
+      (not (was_falling ?down))
+
+      (or (and (not (stone ?up_left)) (not (gem ?up_left))) (updated ?up_left))
+
+      (empty ?left)
+      (not (updated ?left))
+
+      (or (empty ?down_left) (was_empty ?down_left))
+
+      (or (and (not (stone ?danger_cell)) (not (gem ?danger_cell))) (updated ?danger_cell))
     )
 
     :effect (and
       (not (stone ?c))
+      (not (falling ?c))
+      (when (falling ?c) (was_falling ?c))
       (empty ?c)
 
       (stone ?left)
+      (falling ?left)
       (not (empty ?left))
+      (was_empty ?left)
 
       (updated ?c)
       (updated ?left)
@@ -342,20 +370,22 @@
       (not (updated ?left))
       (not (updated ?down_left))
       (not (updated ?c))
-
     )
 
     :effect (and
       (not (gem ?c))
+      (not (falling ?c))
+      (when (falling ?c) (was_falling ?c))
       (empty ?c)
 
       (gem ?left)
+      (falling ?left)
       (not (empty ?left))
+      (was_empty ?left)
 
       (updated ?c)
       (updated ?left)
       (not (pending ?c))
-
     )
   )
 
@@ -398,10 +428,14 @@
 
     :effect (and
       (not (stone ?c))
+      (not (falling ?c))
+      (when (falling ?c) (was_falling ?c))
       (empty ?c)
 
       (stone ?right)
+      (falling ?right)
       (not (empty ?right))
+      (was_empty ?right)
 
       (updated ?c)
       (updated ?right)
@@ -446,10 +480,14 @@
 
     :effect (and
       (not (gem ?c))
+      (not (falling ?c))
+      (when (falling ?c) (was_falling ?c))
       (empty ?c)
 
       (gem ?right)
+      (falling ?right)
       (not (empty ?right))
+      (was_empty ?right)
 
       (updated ?c)
       (updated ?right)
@@ -486,7 +524,9 @@
         (not (empty ?left))
         (updated ?left)
         (not (empty ?down_left))
-        (updated ?down_left))
+        (updated ?down_left)
+        (falling ?down)
+        (was_falling ?down))
 
       ;; no roll right
       (or
@@ -494,12 +534,41 @@
         (not (empty ?right))
         (updated ?right)
         (not (empty ?down_right))
-        (updated ?down_right))
+        (updated ?down_right)
+        (falling ?down)
+        (was_falling ?down))
 
       (not (updated ?c))
     )
 
-    :effect (and (updated ?c) (not (pending ?c)))
+    :effect (and
+      (updated ?c)
+      (not (falling ?c))
+      (when (falling ?c) (was_falling ?c))
+      (not (pending ?c))
+    )
+  )
+
+  (:action __forced__physics_stone_on_falling_noop
+    :parameters (?c - real-cell ?left ?down - cell)
+    :precondition (and
+      (update-required)
+      (down ?c ?down)
+
+      (stone ?c)
+      
+      (falling ?down)
+      (was_falling ?down)
+
+      (not (updated ?c))
+    )
+
+    :effect (and
+      (updated ?c)
+      (not (falling ?c))
+      (when (falling ?c) (was_falling ?c))
+      (not (pending ?c))
+    )
   )
 
   (:action __forced__physics_gem_noop
@@ -530,7 +599,9 @@
         (not (empty ?left))
         (updated ?left)
         (not (empty ?down_left))
-        (updated ?down_left))
+        (updated ?down_left)
+        (falling ?down)
+        (was_falling ?down))
 
       ;; no roll right
       (or
@@ -538,11 +609,32 @@
         (not (empty ?right))
         (updated ?right)
         (not (empty ?down_right))
-        (updated ?down_right))
+        (updated ?down_right)
+        (falling ?down)
+        (was_falling ?down))
       
       (not (updated ?c))
     )
-    :effect (and (updated ?c) (not (pending ?c)))
+    :effect (and
+      (updated ?c)
+      (not (falling ?c))
+      (when (falling ?c) (was_falling ?c))
+      (not (pending ?c))
+    )
+  )
+
+  (:action __forced__physics_agent_noop
+    :parameters (?c - real-cell)
+    :precondition (and
+      (update-required)
+      (agent-at ?c)
+    )
+    :effect (and
+      (updated ?c)
+      (not (falling ?c))
+      (when (falling ?c) (was_falling ?c))
+      (not (pending ?c))
+    )
   )
 
   ;; -------- End-of-tick: at last cell, updated, flip parity --------
@@ -561,7 +653,7 @@
       ;; remove scan pointer: tick finished
       (forall
         (?c - real-cell)
-        (and (not (updated ?c)) (not (pending ?c))))
+        (and (not (updated ?c)) (not (pending ?c)) (not (was_empty ?c)) (not (was_falling ?c))))
       (not (update-required))
     )
   )

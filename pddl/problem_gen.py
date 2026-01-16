@@ -20,7 +20,9 @@ from pathlib import Path
 # These values are taken from stonesngems_cpp/definitions.h
 # (enum class HiddenCellType). We only handle a subset here.
 STONE_IDS   = {3, 4, 48}        # Stone, StoneFalling, StoneInDirt
+STONE_FALLING_IDS = {4}         # StoneFalling
 GEM_IDS     = {5, 6}            # Diamond, DiamondFalling
+GEM_FALLING_IDS = {6}           # DiamondFalling
 EMPTY_IDS   = {1}               # Empty
 DIRT_IDS    = {2}               # Dirt
 AGENT_IDS   = {0, 9}            # Agent, AgentInExit
@@ -125,12 +127,15 @@ def generate_pddl_problem(
     # Find agent and classify contents
     agent_pos = None
     contents = {}  # (r, c) -> kind
+    falling_cells = set()
 
     for idx, cell_id in enumerate(cell_ids):
         r = idx // cols
         c = idx % cols
         kind = classify_cell_id(cell_id)
         contents[(r, c)] = kind
+        if cell_id in STONE_FALLING_IDS or cell_id in GEM_FALLING_IDS:
+            falling_cells.add((r, c))
         if kind == "agent":
             if agent_pos is not None:
                 raise ValueError(
@@ -195,6 +200,8 @@ def generate_pddl_problem(
                 init_lines.append(f"    (gem {cname})")
             elif inner_kind == "brick":
                 init_lines.append(f"    (brick {cname})")
+            if (r - 1, c - 1) in falling_cells:
+                init_lines.append(f"    (falling {cname})")
 
 
     # Adjacency predicates: up, down, left-of, right-of

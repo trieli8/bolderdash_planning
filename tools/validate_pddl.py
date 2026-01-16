@@ -571,12 +571,23 @@ def extract_state_atoms(vars_out: List[SASVar], state: List[int]) -> List[str]:
     return atoms
 
 
-def cells_from_atoms(atoms: Iterable[str]) -> Tuple[Optional[int], Set[int], Set[int], Set[int], Set[int], int, int]:
+def cells_from_atoms(atoms: Iterable[str]) -> Tuple[
+    Optional[int],
+    Set[int],
+    Set[int],
+    Set[int],
+    Set[int],
+    Set[int],
+    Set[int],
+    int,
+    int,
+]:
     agent: Optional[int] = None
     gems: Set[int] = set()
     stones: Set[int] = set()
     dirt: Set[int] = set()
     brick: Set[int] = set()
+    falling: Set[int] = set()
 
     max_r = -1
     max_c = -1
@@ -619,8 +630,12 @@ def cells_from_atoms(atoms: Iterable[str]) -> Tuple[Optional[int], Set[int], Set
             dirt.add(idx)
         elif "brick" in lower:
             brick.add(idx)
+        elif "falling" in lower:
+            falling.add(idx)
 
-    return agent, gems, stones, dirt, brick, rows, cols
+    falling_gems = gems & falling
+    falling_stones = stones & falling
+    return agent, gems, stones, dirt, brick, falling_gems, falling_stones, rows, cols
 
 
 # -------------------- Native trace --------------------
@@ -697,6 +712,9 @@ class NativeStep:
     stones: Set[int]
     dirt: Set[int]
     brick: Set[int]
+    falling_gems: Set[int]
+    falling_stones: Set[int]
+
 
 def _bricks_from_data(data: dict, base_bricks: Optional[Set[int]]) -> Set[int]:
     raw = data.get("bricks")
@@ -704,6 +722,12 @@ def _bricks_from_data(data: dict, base_bricks: Optional[Set[int]]) -> Set[int]:
         raw = data.get("brick")
     if raw is None:
         return set(base_bricks or [])
+    return set(int(x) for x in raw)
+
+def _set_from_data(data: dict, key: str) -> Set[int]:
+    raw = data.get(key)
+    if raw is None:
+        return set()
     return set(int(x) for x in raw)
 
 
@@ -717,10 +741,12 @@ def load_native_trace(path: Path, base_bricks: Optional[Set[int]] = None) -> Lis
             NativeStep(
                 action=data.get("action", ""),
                 agent=int(data["agent"]),
-                gems=set(int(x) for x in data.get("gems", [])),
-                stones=set(int(x) for x in data.get("stones", [])),
-                dirt=set(int(x) for x in data.get("dirt", [])),
+                gems=_set_from_data(data, "gems"),
+                stones=_set_from_data(data, "stones"),
+                dirt=_set_from_data(data, "dirt"),
                 brick=_bricks_from_data(data, base_bricks),
+                falling_gems=_set_from_data(data, "falling_gems"),
+                falling_stones=_set_from_data(data, "falling_stones"),
             )
         )
     return steps
@@ -736,10 +762,12 @@ def parse_native_trace_text(text: str, base_bricks: Optional[Set[int]] = None) -
             NativeStep(
                 action=data.get("action", ""),
                 agent=int(data["agent"]),
-                gems=set(int(x) for x in data.get("gems", [])),
-                stones=set(int(x) for x in data.get("stones", [])),
-                dirt=set(int(x) for x in data.get("dirt", [])),
+                gems=_set_from_data(data, "gems"),
+                stones=_set_from_data(data, "stones"),
+                dirt=_set_from_data(data, "dirt"),
                 brick=_bricks_from_data(data, base_bricks),
+                falling_gems=_set_from_data(data, "falling_gems"),
+                falling_stones=_set_from_data(data, "falling_stones"),
             )
         )
     return steps
@@ -753,6 +781,8 @@ def dump_native_trace(path: Path, steps: List[NativeStep]) -> None:
             "agent": s.agent,
             "gems": sorted(s.gems),
             "stones": sorted(s.stones),
+            "falling_gems": sorted(s.falling_gems),
+            "falling_stones": sorted(s.falling_stones),
             "dirt": sorted(s.dirt),
             "brick": sorted(s.brick),
         }))
@@ -776,7 +806,7 @@ def run_stones_trace(plan: Path, level: Path, timeout: Optional[int]) -> List[Na
 
 
 def launch_trace_viewer(native: List[NativeStep],
-                        pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]],
+                        pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int], Set[int], Set[int]]],
                         actions: List[Tuple[str, List[str]]],
                         level_path: Path) -> None:
     viewer = repo_root() / "stonesandgem" / "build" / "bin" / "trace_viewer"
@@ -797,23 +827,41 @@ def launch_trace_viewer(native: List[NativeStep],
 
 # -------------------- Comparison --------------------
 
-def diff_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]]) -> List[str]:
+def diff_traces(
+    native: List[NativeStep],
+    pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int], Set[int], Set[int]]],
+) -> List[str]:
+    def format_set_diff(label: str, left: Set[int], right: Set[int]) -> Optional[str]:
+        missing = sorted(left - right)
+        extra = sorted(right - left)
+        if not missing and not extra:
+            return None
+        parts = []
+        if missing:
+            parts.append(f"missing={missing}")
+        if extra:
+            parts.append(f"extra={extra}")
+        return f"{label} " + " ".join(parts)
+
     diffs: List[str] = []
     length = min(len(native), len(pddl_trace))
     for i in range(length):
         n = native[i]
-        agent, gems, stones, dirt, brick = pddl_trace[i]
+        agent, gems, stones, dirt, brick, falling_gems, falling_stones = pddl_trace[i]
         errs = []
         if n.agent != agent:
-            errs.append(f"agent {n.agent} != {agent}")
-        if n.gems != gems:
-            errs.append(f"gems {sorted(n.gems)} != {sorted(gems)}")
-        if n.stones != stones:
-            errs.append(f"stones {sorted(n.stones)} != {sorted(stones)}")
-        if n.dirt != dirt:
-            errs.append(f"dirt {sorted(n.dirt)} != {sorted(dirt)}")
-        if n.brick != brick:
-            errs.append(f"brick {sorted(n.brick)} != {sorted(brick)}")
+            errs.append(f"agent native={n.agent} pddl={agent}")
+        for label, left, right in [
+            ("gems", n.gems, gems),
+            ("stones", n.stones, stones),
+            ("falling_gems", n.falling_gems, falling_gems),
+            ("falling_stones", n.falling_stones, falling_stones),
+            ("dirt", n.dirt, dirt),
+            ("brick", n.brick, brick),
+        ]:
+            diff = format_set_diff(label, left, right)
+            if diff:
+                errs.append(diff)
         if errs:
             diffs.append(f"step {i}: " + "; ".join(errs))
     if len(native) != len(pddl_trace):
@@ -821,7 +869,10 @@ def diff_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int], 
     return diffs
 
 
-def compare_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]]) -> int:
+def compare_traces(
+    native: List[NativeStep],
+    pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int], Set[int], Set[int]]],
+) -> int:
     diffs = diff_traces(native, pddl_trace)
     if diffs:
         for diff in diffs:
@@ -831,14 +882,23 @@ def compare_traces(native: List[NativeStep], pddl_trace: List[Tuple[int, Set[int
     return len(diffs)
 
 
-def dump_pddl_trace(path: Path, actions: List[Tuple[str, List[str]]], trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]]) -> None:
+def dump_pddl_trace(
+    path: Path,
+    actions: List[Tuple[str, List[str]]],
+    trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int], Set[int], Set[int]]],
+) -> None:
     lines = []
-    for (act, (agent, gems, stones, dirt, brick)) in zip(["init"] + [f"{n} {' '.join(a)}" for n, a in actions], trace):
+    for (act, (agent, gems, stones, dirt, brick, falling_gems, falling_stones)) in zip(
+        ["init"] + [f"{n} {' '.join(a)}" for n, a in actions],
+        trace,
+    ):
         lines.append(json.dumps({
             "action": act,
             "agent": agent,
             "gems": sorted(gems),
             "stones": sorted(stones),
+            "falling_gems": sorted(falling_gems),
+            "falling_stones": sorted(falling_stones),
             "dirt": sorted(dirt),
             "brick": sorted(brick),
         }))
@@ -913,17 +973,17 @@ def build_pddl_trace(
     *,
     static_bricks: Optional[Set[int]] = None,
     static_dirt: Optional[Set[int]] = None,
-) -> List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]]:
+) -> List[Tuple[int, Set[int], Set[int], Set[int], Set[int], Set[int], Set[int]]]:
     op_map = build_op_map(ops)
     state = list(init_state)
-    pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]] = []
+    pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int], Set[int], Set[int]]] = []
     atoms = extract_state_atoms(vars_out, state)
-    agent, gems, stones, dirt, brick, _, _ = cells_from_atoms(atoms)
+    agent, gems, stones, dirt, brick, falling_gems, falling_stones, _, _ = cells_from_atoms(atoms)
     if static_bricks:
         brick |= static_bricks
     if static_dirt:
         dirt |= static_dirt
-    pddl_trace.append((agent, gems, stones, dirt, brick))
+    pddl_trace.append((agent, gems, stones, dirt, brick, falling_gems, falling_stones))
     op = None
 
     for (name, args_list) in plan_actions:
@@ -933,21 +993,21 @@ def build_pddl_trace(
         apply_axioms(state, axioms)
         apply(op, state)
         atoms = extract_state_atoms(vars_out, state)
-        agent, gems, stones, dirt, brick, _, _ = cells_from_atoms(atoms)
+        agent, gems, stones, dirt, brick, falling_gems, falling_stones, _, _ = cells_from_atoms(atoms)
         if static_bricks:
             brick |= static_bricks
         if static_dirt:
             dirt |= static_dirt
         if "__forced__end_tick" == op.name_tokens[0]:
-            pddl_trace.append((agent or -1, gems, stones, dirt, brick))
+            pddl_trace.append((agent or -1, gems, stones, dirt, brick, falling_gems, falling_stones))
 
     if op and "__forced__end_tick" != op.name_tokens[0]:
-        agent, gems, stones, dirt, brick, _, _ = cells_from_atoms(atoms)
+        agent, gems, stones, dirt, brick, falling_gems, falling_stones, _, _ = cells_from_atoms(atoms)
         if static_bricks:
             brick |= static_bricks
         if static_dirt:
             dirt |= static_dirt
-        pddl_trace.append((agent or -1, gems, stones, dirt, brick))
+        pddl_trace.append((agent or -1, gems, stones, dirt, brick, falling_gems, falling_stones))
     
     return pddl_trace
 
