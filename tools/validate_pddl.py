@@ -625,25 +625,68 @@ def cells_from_atoms(atoms: Iterable[str]) -> Tuple[Optional[int], Set[int], Set
 
 # -------------------- Native trace --------------------
 
-def parse_level_bricks(level: Path) -> Set[int]:
+def _parse_level_data(level: Path) -> Optional[Tuple[int, int, List[int]]]:
     try:
         parts = [p.strip() for p in level.read_text(encoding="utf-8", errors="replace").split("|") if p.strip()]
         if len(parts) < 4:
-            return set()
+            return None
         rows = int(parts[0])
         cols = int(parts[1])
         expected = rows * cols
         cells = parts[4:]
         if len(cells) < expected:
-            return set()
-        brick_ids = {7, 8, 18, 19, 20, 21, 22}
-        bricks = set()
-        for idx, cell in enumerate(cells[:expected]):
-            if int(cell) in brick_ids:
-                bricks.add(idx)
-        return bricks
+            return None
+        cell_ids = [int(cell) for cell in cells[:expected]]
+        return rows, cols, cell_ids
     except Exception:
+        return None
+
+
+def parse_level_static_sets(level: Path) -> Tuple[int, int, Set[int], Set[int]]:
+    parsed = _parse_level_data(level)
+    if not parsed:
+        return 0, 0, set(), set()
+    rows, cols, cell_ids = parsed
+    brick_ids = {7, 8, 18, 19, 20, 21, 22}
+    dirt_ids = {2}
+    bricks: Set[int] = set()
+    dirt: Set[int] = set()
+    for idx, cell_id in enumerate(cell_ids):
+        if cell_id in brick_ids:
+            bricks.add(idx)
+        if cell_id in dirt_ids:
+            dirt.add(idx)
+    return rows, cols, bricks, dirt
+
+
+def parse_level_bricks(level: Path) -> Set[int]:
+    _, _, bricks, _ = parse_level_static_sets(level)
+    return bricks
+
+
+def represented_cells(vars_out: List[SASVar], predicate: str, rows: int, cols: int) -> Set[int]:
+    if rows <= 0 or cols <= 0:
         return set()
+    pred = predicate.lower()
+    cell_re = re.compile(r"c_(\d+)_(\d+)")
+    cells: Set[int] = set()
+    for var in vars_out:
+        for atom in var.atoms:
+            lower = atom.lower()
+            if pred not in lower:
+                continue
+            m = cell_re.search(lower)
+            if not m:
+                continue
+            r = int(m.group(1))
+            c = int(m.group(2))
+            if r == 0 or c == 0 or r == rows + 1 or c == cols + 1:
+                continue
+            if r < 1 or c < 1 or r > rows or c > cols:
+                continue
+            idx = (r - 1) * cols + (c - 1)
+            cells.add(idx)
+    return cells
 
 
 @dataclass
@@ -867,12 +910,19 @@ def build_pddl_trace(
     ops: List[SASOp],
     plan_actions: List[Tuple[str, List[str]]],
     axioms: Optional[SASAxioms] = None,
+    *,
+    static_bricks: Optional[Set[int]] = None,
+    static_dirt: Optional[Set[int]] = None,
 ) -> List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]]:
     op_map = build_op_map(ops)
     state = list(init_state)
     pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int]]] = []
     atoms = extract_state_atoms(vars_out, state)
     agent, gems, stones, dirt, brick, _, _ = cells_from_atoms(atoms)
+    if static_bricks:
+        brick |= static_bricks
+    if static_dirt:
+        dirt |= static_dirt
     pddl_trace.append((agent, gems, stones, dirt, brick))
     op = None
 
@@ -884,11 +934,19 @@ def build_pddl_trace(
         apply(op, state)
         atoms = extract_state_atoms(vars_out, state)
         agent, gems, stones, dirt, brick, _, _ = cells_from_atoms(atoms)
+        if static_bricks:
+            brick |= static_bricks
+        if static_dirt:
+            dirt |= static_dirt
         if "__forced__end_tick" == op.name_tokens[0]:
             pddl_trace.append((agent or -1, gems, stones, dirt, brick))
 
     if op and "__forced__end_tick" != op.name_tokens[0]:
         agent, gems, stones, dirt, brick, _, _ = cells_from_atoms(atoms)
+        if static_bricks:
+            brick |= static_bricks
+        if static_dirt:
+            dirt |= static_dirt
         pddl_trace.append((agent or -1, gems, stones, dirt, brick))
     
     return pddl_trace
@@ -909,12 +967,23 @@ def validate_plan_diff(
         sas_text = run_translate(domain, problem, timeout)
         vars_out, init_state, ops, axioms = parse_sas(sas_text)
         plan_actions = build_plan_actions_from_file(plan_path, ops, init_state, axioms=axioms)
+        rows, cols, base_bricks, base_dirt = parse_level_static_sets(level_path)
+        static_bricks = base_bricks - represented_cells(vars_out, "brick", rows, cols)
+        static_dirt = base_dirt - represented_cells(vars_out, "dirt", rows, cols)
         with tempfile.TemporaryDirectory(prefix="play_plan_") as td:
             play_plan_path = Path(td) / "plan.play"
             write_direction_plan(play_plan_path, plan_actions)
             if not play_plan_path.exists():
                 play_plan_path.write_text("", encoding="utf-8")
-            pddl_trace = build_pddl_trace(vars_out, init_state, ops, plan_actions, axioms=axioms)
+            pddl_trace = build_pddl_trace(
+                vars_out,
+                init_state,
+                ops,
+                plan_actions,
+                axioms=axioms,
+                static_bricks=static_bricks,
+                static_dirt=static_dirt,
+            )
             native_steps = run_stones_trace(play_plan_path, level_path, timeout)
         return diff_traces(native_steps, pddl_trace)
     finally:
@@ -1014,8 +1083,19 @@ def main() -> int:
     if not play_plan_path.exists():
         play_plan_path.write_text("", encoding="utf-8")
 
+    rows, cols, base_bricks, base_dirt = parse_level_static_sets(level_path)
+    static_bricks = base_bricks - represented_cells(vars_out, "brick", rows, cols)
+    static_dirt = base_dirt - represented_cells(vars_out, "dirt", rows, cols)
     try:
-        pddl_trace = build_pddl_trace(vars_out, init_state, ops, plan_actions, axioms=axioms)
+        pddl_trace = build_pddl_trace(
+            vars_out,
+            init_state,
+            ops,
+            plan_actions,
+            axioms=axioms,
+            static_bricks=static_bricks,
+            static_dirt=static_dirt,
+        )
     except Exception as e:
         print(f"[ERR] {e}")
         return 1

@@ -218,7 +218,7 @@
       (update-required)
       (down ?c ?down)
       (stone ?c)
-      (or (dirt ?down) (brick ?down))
+      (or (dirt ?down) (brick ?down) (updated ?down))
 
       (not (updated ?c))
     )
@@ -234,7 +234,7 @@
       (update-required)
       (down ?c ?down)
       (gem ?c)
-      (or (dirt ?down) (brick ?down))
+      (or (dirt ?down) (brick ?down) (updated ?down))
 
 
       (not (updated ?c))
@@ -294,11 +294,10 @@
       (stone ?c)
       (or (stone ?down) (gem ?down) (brick ?down) (updated ?down) )
       (empty ?left)
-      (empty ?down_left)
+      (or (empty ?down_left) (updated ?down_left))
 
       
       (not (updated ?left))
-      (not (updated ?down_left))
       (not (updated ?c))
 
     )
@@ -393,7 +392,6 @@
       (not (updated ?right))
       (not (updated ?down_right))
       (not (updated ?c))
-      (not (pending ?c))
 
 
     )
@@ -444,8 +442,6 @@
       (not (updated ?right))
       (not (updated ?down_right))
       (not (updated ?c))
-      (not (pending ?c))
-
     )
 
     :effect (and
