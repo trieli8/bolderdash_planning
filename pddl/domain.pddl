@@ -2,7 +2,7 @@
   (:requirements :strips :typing :negative-preconditions :disjunctive-preconditions :universal-preconditions :conditional-effects :action-costs)
 
   (:types
-    cell agent real-cell border-cell - cell
+    cell real-cell border-cell - cell
   )
 
   (:functions
@@ -46,7 +46,7 @@
   ;; ======================================================
 
   (:action move_noop
-    :parameters (?a - agent)
+    :parameters ()
     :precondition (and (agent-alive)
       (not (update-required))
     )
@@ -58,7 +58,7 @@
   )
 
   (:action move_empty
-    :parameters (?a - agent ?from ?to - real-cell)
+    :parameters (?from ?to - real-cell)
     :precondition (and (agent-alive)
       (agent-at ?from)
       (or (up ?from ?to)
@@ -83,7 +83,7 @@
   )
   ;; Move into dirt (mines it to empty)
   (:action move_into_dirt
-    :parameters (?a - agent ?from ?to - real-cell)
+    :parameters (?from ?to - real-cell)
     :precondition (and (agent-alive)
       (agent-at ?from)
       (or (up ?from ?to)
@@ -110,7 +110,7 @@
 
   ;; Move into gem (collect it -> got-gem)
   (:action move_into_gem
-    :parameters (?a - agent ?from ?to - real-cell)
+    :parameters (?from ?to - real-cell)
     :precondition (and (agent-alive)
       (agent-at ?from)
       (or (up ?from ?to)
@@ -138,7 +138,7 @@
   )
 
   (:action move_push_rock
-    :parameters (?a - agent ?from ?to ?stone_dest - real-cell)
+    :parameters (?from ?to ?stone_dest - real-cell)
     :precondition (and (agent-alive)
       (agent-at ?from)
       (or
@@ -242,7 +242,7 @@
       (update-required)
       (down ?c ?down)
       (stone ?c)
-      (or (dirt ?down) (updated ?down))
+      (or (dirt ?down))
 
       (not (updated ?c))
     )
@@ -260,7 +260,7 @@
       (update-required)
       (down ?c ?down)
       (gem ?c)
-      (or (dirt ?down) (updated ?down) (brick ?down))
+      (or (dirt ?down))
 
 
       (not (updated ?c))
@@ -290,24 +290,24 @@
     )
   )
 
+  ; ------------------------------------------------------
+  ;; ROLLING
+  ; ------------------------------------------------------
+
   (:action __forced__physics_stone_roll_left
-    :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right ?danger_cell - cell)
+    :parameters (?c - real-cell ?left ?down_left ?down ?up_left ?danger_cell - cell)
 
     :precondition (and
       (update-required)
       (right-of ?danger_cell ?left)
       (right-of ?left ?c)
-      (right-of ?c ?right)
 
       ;; below
       (down ?left ?down_left)
       (down ?c ?down)
-      (down ?right ?down_right)
 
       ;; above
       (up ?left ?up_left)
-      (up ?c ?up)
-      (up ?right ?up_right)
 
       (stone ?c)
       (not (updated ?c))
@@ -345,23 +345,19 @@
   )
 
   (:action __forced__physics_gem_roll_left
-    :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right ?danger_cell - cell)
+    :parameters (?c - real-cell ?left ?down_left ?down ?up_left ?danger_cell - cell)
 
     :precondition (and
       (update-required)
       (right-of ?danger_cell ?left)
       (right-of ?left ?c)
-      (right-of ?c ?right)
 
       ;; below
       (down ?left ?down_left)
       (down ?c ?down)
-      (down ?right ?down_right)
 
       ;; above
       (up ?left ?up_left)
-      (up ?c ?up)
-      (up ?right ?up_right)
 
       (gem ?c)
       (not (updated ?c))
@@ -438,6 +434,7 @@
         (and (stone ?up_left) (not (updated ?up_left)))
         (and (gem ?up_left) (not (updated ?up_left)))
       )
+
       (or (and (not (stone ?left_danger)) (not (gem ?left_danger))) (updated ?left_danger))
 
     )
@@ -502,6 +499,7 @@
       )
       (or (and (not (stone ?left_danger)) (not (gem ?left_danger))) (updated ?left_danger))
 
+
     )
 
     :effect (and
@@ -543,7 +541,7 @@
       (up ?right ?up_right)
 
       ;; no fall
-      (not (empty ?down))
+      (or (not (empty ?down)) (updated ?down))
 
       ;; no roll left
       (or
@@ -554,7 +552,9 @@
         (updated ?left)
         (and (not (empty ?down_left)) (not (was_empty ?down_left)))
         (and (stone ?up_left) (not (updated ?up_left)))
-        (and (gem ?up_left) (not (updated ?up_left))))
+        (and (gem ?up_left) (not (updated ?up_left)))
+        (and (stone ?left_danger) (not (updated ?left_danger)))
+        (and (gem ?left_danger) (not (updated ?left_danger))))
       ;; no roll right
       (or
         (and (not (stone ?down)) (not (gem ?down)) (not (brick ?down)) (not (updated ?down)))
@@ -566,8 +566,9 @@
         (and (stone ?up_right) (not (updated ?up_right)))
         (and (gem ?up_right) (not (updated ?up_right))))
 
-      (not (updated ?c))
       (or (and (not (stone ?left_danger)) (not (gem ?left_danger))) (updated ?left_danger))
+      
+      (not (updated ?c))
 
     )
 
@@ -580,7 +581,7 @@
   )
 
   (:action __forced__physics_on_falling_noop
-    :parameters (?c - real-cell ?left ?down - cell)
+    :parameters (?c - real-cell ?down - cell)
     :precondition (and
       (update-required)
       (down ?c ?down)
@@ -622,7 +623,7 @@
       (up ?right ?up_right)
 
       ;; no fall
-      (not (empty ?down))
+      (or (not (empty ?down)) (updated ?down))
 
       ;; no roll left
       (or
@@ -634,6 +635,8 @@
         (and (not (empty ?down_left)) (not (was_empty ?down_left)))
         (and (stone ?up_left) (not (updated ?up_left)))
         (and (gem ?up_left) (not (updated ?up_left)))
+        (and (stone ?left_danger) (not (updated ?left_danger)))
+        (and (gem ?left_danger) (not (updated ?left_danger)))
       )
 
       ;; no roll right
@@ -646,9 +649,9 @@
         (and (not (empty ?down_right)) (not (was_empty ?down_right)))
         (and (stone ?up_right) (not (updated ?up_right)))
         (and (gem ?up_right) (not (updated ?up_right))))
+      (or (and (not (stone ?left_danger)) (not (gem ?left_danger))) (updated ?left_danger))
       
       (not (updated ?c))
-      (or (and (not (stone ?left_danger)) (not (gem ?left_danger))) (updated ?left_danger))
 
     )
     :effect (and
