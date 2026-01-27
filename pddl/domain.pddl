@@ -149,19 +149,20 @@
       )
       (stone ?to)
       (empty ?stone_dest)
+      (not (falling ?to))
       (not (update-required))
     )
     :effect (and
       (not (agent-at ?from))
       (agent-at ?to)
 
+      (not (empty ?to))
+      (empty ?from)
+      
       (not (stone ?to))
-      (not (falling ?to))
-      (empty ?to)
-      ; (was_empty ?to) TODO THINK ABOUT THIS
+      (stone ?stone_dest)
 
       (not (empty ?stone_dest))
-      (stone ?stone_dest)
       (not (falling ?stone_dest))
 
       (updated ?to)
@@ -171,6 +172,36 @@
 
     )
   )
+
+  ; =====================================================
+  ;; AGENT DEATH
+  ;; =====================================================
+
+  (:action __forced__physics_fall_on_agent
+      :parameters (?c ?down - real-cell)
+      :precondition (and 
+        (update-required)
+        (pending ?c)
+        (down ?c ?down)
+
+        (stone ?c)
+        (falling ?c)
+
+        (agent-at ?down)
+
+        (not (updated ?c))
+      )
+      :effect (and
+        (not (agent-alive))
+        (crushed)
+
+        (updated ?c)
+        (not (falling ?c))
+        (when (falling ?c) (was_falling ?c))
+        (not (pending ?c))
+      )
+  )
+  
 
   ;; ======================================================
   ;; PHYSICS: ONE-TICK CELL UPDATE (PARALLEL)
@@ -183,6 +214,7 @@
 
       (down ?c ?down)
       (stone ?c)
+      (pending ?c)
       (empty ?down)
 
       (not (updated ?c))
