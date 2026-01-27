@@ -14,7 +14,8 @@ import sys
 from pathlib import Path
 
 # ----------------------------------------------------------------------
-# Mapping from HiddenCellType IDs to our simplified PDDL predicates
+# Mapping from HiddenCellType IDs to our simplified PDDL 
+
 # ----------------------------------------------------------------------
 
 # These values are taken from stonesngems_cpp/definitions.h
@@ -123,6 +124,8 @@ def generate_pddl_problem(
         for c in range(padded_cols)
         if r == 0 or r == padded_rows - 1 or c == 0 or c == padded_cols - 1
     ]
+    left_void = "left_void"
+    border_cells.append(left_void)
 
     # Find agent and classify contents
     agent_pos = None
@@ -154,7 +157,7 @@ def generate_pddl_problem(
     # ------------------------------------------------------------------
     # :objects
     # ------------------------------------------------------------------
-    obj_lines = [f"    {agent_name} - agent"]
+    obj_lines = []
     obj_lines.append(f"    {' '.join(interior_cells)} - real-cell")
     obj_lines.append(f"    {' '.join(border_cells)} - border-cell")
 
@@ -203,6 +206,9 @@ def generate_pddl_problem(
             if (r - 1, c - 1) in falling_cells:
                 init_lines.append(f"    (falling {cname})")
 
+    init_lines.append(f"    (border-cell {left_void})")
+    init_lines.append(f"    (not (empty {left_void}))")
+
 
     # Adjacency predicates: up, down, left-of, right-of
     for r in range(padded_rows):
@@ -217,7 +223,9 @@ def generate_pddl_problem(
                 below = cell_name(r + 1, c)
                 init_lines.append(f"    (down {cname} {below})")
             # right-of: left -> right
-            if c > 0:
+            if c == 0:
+                init_lines.append(f"    (right-of {left_void} {cname})")
+            else:
                 left = cell_name(r, c - 1)
                 init_lines.append(f"    (right-of {left} {cname})")
             # left-of: this -> right
@@ -241,7 +249,10 @@ def generate_pddl_problem(
     # :goal
     # ------------------------------------------------------------------
     # Simple default: eventually get a gem
-    goal_lines = ["    (got-gem)", "    (not (update-required))"]
+    goal_lines = ["    (got-gem)", 
+                  "    (not (update-required))", 
+                  "    (not (crushed))", 
+                  "    (agent-alive)"]
 
     # Assemble full PDDL
     pddl = f"""\

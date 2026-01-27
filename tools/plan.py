@@ -200,6 +200,15 @@ def write_direction_plan(path: Path, actions: List[Tuple[str, List[str]]]) -> No
             if direction:
                 tokens.append(direction)
                 continue
+        if len(args) >= 2:
+            direction = _dir_from_coords(args[0], args[1])
+            if direction:
+                tokens.append(direction)
+                continue
+        if len(args) == 0:
+            # No-arg action, just use name
+            tokens.append(name.lower())
+            continue
     if tokens:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(f"({t})" for t in tokens) + "\n", encoding="utf-8")
@@ -371,7 +380,8 @@ def solve_with_fd(
         if optimal:
             # Optimal: A* with IPDB heuristic (handles ADL after compilation better than lmcut alias).
             cmd = [sys.executable, str(fd_py), str(domain), str(problem),
-                   "--search", "astar(merge_and_shrink())"]
+                #    "--search", "astar(merge_and_shrink(shrink_strategy=shrink_bisimulation(greedy=false),merge_strategy=merge_sccs(order_of_sccs=topological,merge_selector=score_based_filtering(scoring_functions=[goal_relevance(),dfp(),total_order()])),label_reduction=exact(before_shrinking=true,before_merging=false),max_states=50k,threshold_before_merge=1))"]
+                   "--search", "astar(blind())"]
             tag = "fd-opt"
         else:
             # Satisficing: default stops after first plan; optionally run an anytime loop.
@@ -462,7 +472,7 @@ def main() -> int:
     ap.add_argument("--stream", action="store_true", help="Stream planner output live to terminal")
     ap.add_argument("--play-plan", type=Path, help="Play an existing plan file with the plan_player GUI and exit.")
     ap.add_argument("--play-level", type=Path, help="Optional level file to pass to plan_player.")
-    ap.add_argument("--play-output", action="store_true", help="After planning, open the first solved plan in plan_player.")
+    ap.add_argument("--view", action="store_true", help="After planning, open the first solved plan in plan_player.")
     args = ap.parse_args()
 
     if args.play_plan:
@@ -558,7 +568,7 @@ def main() -> int:
 
     print(f"\nPlans saved under: {out_dir}")
 
-    if args.play_output and play_candidates:
+    if args.view and play_candidates:
         plan_file = play_candidates[0]
         plan_play_file = out_dir / f"{plan_file.stem}.play.plan"
         if plan_play_file.exists():
