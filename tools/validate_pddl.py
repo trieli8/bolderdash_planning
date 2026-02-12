@@ -582,7 +582,7 @@ def cells_from_atoms(atoms: Iterable[str]) -> Tuple[
     int,
     int,
 ]:
-    agent: Optional[int] = None
+    agent: Optional[int] = -1
     gems: Set[int] = set()
     stones: Set[int] = set()
     dirt: Set[int] = set()
@@ -999,7 +999,7 @@ def build_pddl_trace(
         if static_dirt:
             dirt |= static_dirt
         if "__forced__end_tick" == op.name_tokens[0]:
-            pddl_trace.append((agent or -1, gems, stones, dirt, brick, falling_gems, falling_stones))
+            pddl_trace.append((agent, gems, stones, dirt, brick, falling_gems, falling_stones))
 
     if op and "__forced__end_tick" != op.name_tokens[0]:
         agent, gems, stones, dirt, brick, falling_gems, falling_stones, _, _ = cells_from_atoms(atoms)
@@ -1007,7 +1007,7 @@ def build_pddl_trace(
             brick |= static_bricks
         if static_dirt:
             dirt |= static_dirt
-        pddl_trace.append((agent or -1, gems, stones, dirt, brick, falling_gems, falling_stones))
+        pddl_trace.append((agent, gems, stones, dirt, brick, falling_gems, falling_stones))
     
     return pddl_trace
 

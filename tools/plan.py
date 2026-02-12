@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 import os
 import re
 import shutil
@@ -218,6 +219,60 @@ def write_text_file(path: Path, text: str) -> None:
     path.write_text(text or "", encoding="utf-8")
 
 
+def extract_pddl_failure_trace(raw_stdout: str, base_bricks: Optional[set[int]] = None) -> List[str]:
+    lines: List[str] = []
+    for line in raw_stdout.splitlines():
+        if "\"action\":\"pddl_failure\"" in line:
+            if base_bricks:
+                try:
+                    data = json.loads(line)
+                    bricks = set(data.get("bricks") or data.get("brick") or [])
+                    bricks |= base_bricks
+                    data["bricks"] = sorted(bricks)
+                    if "brick" in data:
+                        del data["brick"]
+                    line = json.dumps(data, separators=(",", ":"))
+                except Exception:
+                    pass
+            lines.append(line.strip())
+    return lines
+
+
+def resolve_level_file_for_trace(problem: Path, explicit_level: Optional[Path]) -> Optional[Path]:
+    if explicit_level:
+        return explicit_level.resolve()
+    if problem.suffix.lower() == ".txt":
+        return problem.resolve()
+    candidate = problem.with_suffix(".txt")
+    if candidate.exists():
+        return candidate.resolve()
+    repo_level = repo_root() / "pddl" / "level.txt"
+    if repo_level.exists():
+        return repo_level.resolve()
+    return None
+
+
+def parse_level_bricks(level: Path) -> set[int]:
+    try:
+        parts = [p.strip() for p in level.read_text(encoding="utf-8", errors="replace").split("|") if p.strip()]
+        if len(parts) < 4:
+            return set()
+        rows = int(parts[0])
+        cols = int(parts[1])
+        expected = rows * cols
+        cells = parts[4:]
+        if len(cells) < expected:
+            return set()
+        brick_ids = {7, 8, 18, 19, 20, 21, 22}
+        bricks: set[int] = set()
+        for idx, cell in enumerate(cells[:expected]):
+            if int(cell) in brick_ids:
+                bricks.add(idx)
+        return bricks
+    except Exception:
+        return set()
+
+
 def parse_sexp_action(s: str) -> Optional[Tuple[str, List[str]]]:
     """
     Parse a single FF action line like:
@@ -381,7 +436,8 @@ def solve_with_fd(
             # Optimal: A* with IPDB heuristic (handles ADL after compilation better than lmcut alias).
             cmd = [sys.executable, str(fd_py), str(domain), str(problem),
                 #    "--search", "astar(merge_and_shrink(shrink_strategy=shrink_bisimulation(greedy=false),merge_strategy=merge_sccs(order_of_sccs=topological,merge_selector=score_based_filtering(scoring_functions=[goal_relevance(),dfp(),total_order()])),label_reduction=exact(before_shrinking=true,before_merging=false),max_states=50k,threshold_before_merge=1))"]
-                   "--search", "astar(blind())"]
+                   "--search", "astar(blind(verbosity=debug))"
+                   ]
             tag = "fd-opt"
         else:
             # Satisficing: default stops after first plan; optionally run an anytime loop.
@@ -473,6 +529,8 @@ def main() -> int:
     ap.add_argument("--play-plan", type=Path, help="Play an existing plan file with the plan_player GUI and exit.")
     ap.add_argument("--play-level", type=Path, help="Optional level file to pass to plan_player.")
     ap.add_argument("--view", action="store_true", help="After planning, open the first solved plan in plan_player.")
+    ap.add_argument("--pddl-failure-trace-out", type=Path, help="Write pddl_failure states (JSONL) extracted from FD stdout.")
+    ap.add_argument("--view-pddl-failure", action="store_true", help="Open trace_viewer to show all pddl_failure states (FD only).")
     args = ap.parse_args()
 
     if args.play_plan:
@@ -494,7 +552,10 @@ def main() -> int:
         return 2
 
     domain = args.domain.resolve()
-    problem = args.problem.resolve()
+    input_problem = args.problem.resolve()
+    level_file_for_view = resolve_level_file_for_trace(input_problem, args.play_level)
+    base_bricks_for_view = parse_level_bricks(level_file_for_view) if level_file_for_view else set()
+    problem = input_problem
 
     # If a level .txt is passed as the "problem", generate a PDDL problem via problem_gen.
     temp_problem_dir: Optional[tempfile.TemporaryDirectory] = None
@@ -502,7 +563,6 @@ def main() -> int:
         problem_name = problem.stem
         try:
             problem, temp_problem_dir = generate_problem_from_level(problem, problem_name)
-            level_file = problem
             print(f"[INFO] Generated PDDL problem from {args.problem} -> {problem}")
         except Exception as e:
             print(f"[ERR] Failed to generate PDDL problem from {problem}: {e}", file=sys.stderr)
@@ -559,6 +619,29 @@ def main() -> int:
         if r.status == "solved" and r.actions:
             play_candidates.append(fd_plan_path)
 
+        if args.pddl_failure_trace_out or args.view_pddl_failure:
+            pddl_failure_lines = extract_pddl_failure_trace(r.raw_stdout or "", base_bricks=base_bricks_for_view)
+            pddl_failure_trace_path = args.pddl_failure_trace_out
+            if not pddl_failure_trace_path:
+                pddl_failure_trace_path = out_dir / f"{fd_name}.pddl_failure.jsonl"
+            pddl_failure_trace_path.parent.mkdir(parents=True, exist_ok=True)
+            pddl_failure_trace_path.write_text("\n".join(pddl_failure_lines) + ("\n" if pddl_failure_lines else ""), encoding="utf-8")
+            if not pddl_failure_lines:
+                print("[WARN] No pddl_failure states found in FD output.", file=sys.stderr)
+            elif args.view_pddl_failure:
+                if not level_file_for_view or not level_file_for_view.exists():
+                    print("[WARN] Level file not found; provide --play-level or pass a .txt level to --problem to view pddl_failure states.", file=sys.stderr)
+                else:
+                    viewer = repo_root() / "stonesandgem" / "build" / "bin" / "trace_viewer"
+                    if not viewer.exists():
+                        print(f"[WARN] trace_viewer not found at {viewer} (build with: cmake --build stonesandgem/build --target trace_viewer)", file=sys.stderr)
+                    else:
+                        cmd = [str(viewer), str(pddl_failure_trace_path), str(pddl_failure_trace_path), str(level_file_for_view)]
+                        try:
+                            subprocess.run(cmd, check=False)
+                        except Exception as e:
+                            print(f"[WARN] trace_viewer failed: {e}", file=sys.stderr)
+
     # Summary
     print("\n== Summary ==")
     for r in results:
@@ -572,13 +655,9 @@ def main() -> int:
         plan_file = play_candidates[0]
         plan_play_file = out_dir / f"{plan_file.stem}.play.plan"
         if plan_play_file.exists():
-            problem = args.problem.resolve()
-            if problem.suffix.lower() == ".txt":
-                level_play_file = problem
-            else:
-                level_play_file = args.play_level.resolve() if args.play_level else None
+            level_play_file = level_file_for_view
             try:
-                print(f"[PLAY] Launching plan_player with {plan_play_file}" + (f" and level {level_play_file}" if level_file else ""))
+                print(f"[PLAY] Launching plan_player with {plan_play_file}" + (f" and level {level_play_file}" if level_play_file else ""))
                 rc, out, err = play_plan(plan_play_file, level_play_file)
                 if out:
                     sys.stdout.write(out)
