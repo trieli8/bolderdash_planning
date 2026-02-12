@@ -906,20 +906,30 @@ def dump_pddl_trace(
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def prepare_problem_and_level(problem_input: Path) -> Tuple[Path, Path, Optional[tempfile.TemporaryDirectory]]:
+def select_problem_gen(domain: Path) -> Path:
+    domain_name = domain.name.lower()
+    if "scanner_separated" in domain_name or "scaner_separated" in domain_name:
+        return repo_root() / "pddl" / "problem_gen_scanner_separated.py"
+    return repo_root() / "pddl" / "problem_gen.py"
+
+
+def prepare_problem_and_level(
+    problem_input: Path,
+    domain: Path,
+) -> Tuple[Path, Path, Optional[tempfile.TemporaryDirectory]]:
     temp_problem_dir: Optional[tempfile.TemporaryDirectory] = None
     if problem_input.suffix.lower() == ".txt":
         level_path = problem_input
         problem_name = problem_input.stem
-        gen_py = repo_root() / "pddl" / "problem_gen.py"
+        gen_py = select_problem_gen(domain)
         if not gen_py.exists():
-            raise FileNotFoundError(f"problem_gen.py not found at {gen_py}")
+            raise FileNotFoundError(f"Problem generator not found at {gen_py}")
         temp_problem_dir = tempfile.TemporaryDirectory(prefix="gen_problem_")
         problem = Path(temp_problem_dir.name) / f"{problem_name}.pddl"
         cmd = [sys.executable, str(gen_py), str(problem_input), "-p", problem_name]
         rc = subprocess.run(cmd, text=True, capture_output=True)
         if rc.returncode != 0:
-            raise RuntimeError(f"problem_gen failed (rc={rc.returncode}): {rc.stderr or rc.stdout}")
+            raise RuntimeError(f"{gen_py.name} failed (rc={rc.returncode}): {rc.stderr or rc.stdout}")
         problem.write_text(rc.stdout, encoding="utf-8")
         return problem, level_path, temp_problem_dir
 
@@ -1022,7 +1032,7 @@ def validate_plan_diff(
     domain = domain.resolve()
     level_input = level.resolve()
     plan_path = plan.resolve()
-    problem, level_path, temp_problem_dir = prepare_problem_and_level(level_input)
+    problem, level_path, temp_problem_dir = prepare_problem_and_level(level_input, domain)
     try:
         sas_text = run_translate(domain, problem, timeout)
         vars_out, init_state, ops, axioms = parse_sas(sas_text)
@@ -1075,7 +1085,7 @@ def main() -> int:
     problem_input = args.problem.resolve()
 
     try:
-        problem, level_path, temp_problem_dir = prepare_problem_and_level(problem_input)
+        problem, level_path, temp_problem_dir = prepare_problem_and_level(problem_input, domain)
     except Exception as e:
         sys.stderr.write(f"[ERR] {e}\n")
         return 1

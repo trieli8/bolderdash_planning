@@ -441,7 +441,12 @@ def solve_with_fd(
             tag = "fd-opt"
         else:
             # Satisficing: default stops after first plan; optionally run an anytime loop.
-            if keep_searching:
+            domain_name = domain.name.lower()
+            if "scanner_separated" in domain_name or "scaner_separated" in domain_name:
+                # Greedy FF gets stuck on scanner-separated (many forced actions + delete effects).
+                search = "astar(blind())"
+                tag = "fd"
+            elif keep_searching:
                 search = "iterated([lazy_greedy([ff()], preferred=[ff()])], repeat_last=true)"
                 tag = "fd-any"
             else:
@@ -497,23 +502,31 @@ def solve_with_fd(
 # CLI main
 # -----------------------------
 
+def select_problem_gen(domain: Path) -> Path:
+    domain_name = domain.name.lower()
+    if "scanner_separated" in domain_name or "scaner_separated" in domain_name:
+        return repo_root() / "pddl" / "problem_gen_scanner_separated.py"
+    return repo_root() / "pddl" / "problem_gen.py"
+
+
 def generate_problem_from_level(
-    level_txt: Path, problem_name: str
+    level_txt: Path, problem_name: str, domain: Path
 ) -> Tuple[Path, tempfile.TemporaryDirectory]:
     """
-    Use pddl/problem_gen.py to generate a PDDL problem from a level text file.
-    Returns (pddl_path, tempdir) so caller can keep tempdir alive.
+    Use the appropriate problem_gen script to generate a PDDL problem
+    from a level text file. Returns (pddl_path, tempdir) so caller can
+    keep tempdir alive.
     """
-    gen_py = repo_root() / "pddl" / "problem_gen.py"
+    gen_py = select_problem_gen(domain)
     if not gen_py.exists():
-        raise FileNotFoundError(f"Missing problem_gen.py at {gen_py}")
+        raise FileNotFoundError(f"Missing problem generator at {gen_py}")
     tmpdir = tempfile.TemporaryDirectory(prefix="gen_problem_")
     out_path = Path(tmpdir.name) / f"{problem_name}.pddl"
     cmd = [sys.executable, str(gen_py), str(level_txt), "-p", problem_name]
     rc, out, err = run_cmd_capture(cmd)
     if rc != 0:
         tmpdir.cleanup()
-        raise RuntimeError(f"problem_gen.py failed (rc={rc}): {err or out}")
+        raise RuntimeError(f"{gen_py.name} failed (rc={rc}): {err or out}")
     out_path.write_text(out, encoding="utf-8")
     return out_path, tmpdir
 
@@ -562,7 +575,7 @@ def main() -> int:
     if problem.suffix.lower() == ".txt":
         problem_name = problem.stem
         try:
-            problem, temp_problem_dir = generate_problem_from_level(problem, problem_name)
+            problem, temp_problem_dir = generate_problem_from_level(problem, problem_name, domain)
             print(f"[INFO] Generated PDDL problem from {args.problem} -> {problem}")
         except Exception as e:
             print(f"[ERR] Failed to generate PDDL problem from {problem}: {e}", file=sys.stderr)
