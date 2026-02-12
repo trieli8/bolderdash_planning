@@ -210,7 +210,7 @@ def generate_pddl_problem(
     init_lines.append(f"    (not (empty {left_void}))")
 
 
-    # Adjacency predicates: up, down, left-of, right-of
+    # Adjacency predicates: up, down, right-of (left via reverse right-of).
     for r in range(padded_rows):
         for c in range(padded_cols):
             cname = cell_name(r, c)
@@ -228,10 +228,6 @@ def generate_pddl_problem(
             else:
                 left = cell_name(r, c - 1)
                 init_lines.append(f"    (right-of {left} {cname})")
-            # left-of: this -> right
-            if c < padded_cols - 1:
-                right = cell_name(r, c + 1)
-                init_lines.append(f"    (left-of {cname} {right})")
 
     # Scan order: top-left to bottom-right over interior cells only
     order = [interior_cell_name(r, c) for r in range(rows) for c in range(cols)]
