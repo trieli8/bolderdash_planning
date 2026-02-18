@@ -91,6 +91,27 @@ python tools/plan.py --play-plan plans/<problem>/fd.plan [--play-level <level.tx
 - Plans/logs are saved under `plans/<problem_name>/` (e.g., `fd.plan`, `fd.play.plan`, `ff.plan`, `*.stdout.txt`).
 - `--play-output` opens the first solved plan in `stonesandgem/build/bin/plan_player` after planning.
 
+### PDDL+ planning wrapper
+
+```bash
+# Auto-detect ENHSP/OPTIC under planners/pddl-plus/
+python tools/plan_plus.py --domain pddl/domain_plus_from_domain.pddl --problem pddl/level_5_5.txt
+
+# Scanner-separated PDDL+ variant
+python tools/plan_plus.py --domain pddl/domain_plus_scanner_separated.pddl --problem pddl/level_5_5.txt
+
+# Custom planner command template
+python tools/plan_plus.py --planner cmd \
+  --cmd-template "<planner-bin> {domain} {problem}" \
+  --domain pddl/domain_plus_relaxed.pddl --problem pddl/level_5_5.txt
+```
+
+- Outputs are written to `plans/<problem_name>/` as `plus-*.plan`, `plus-*.timed.plan`, `plus-*.play.plan`, and planner logs.
+- `.txt` levels are converted with domain-specific generators:
+  - `pddl/problem_gen_plus_from_domain.py`
+  - `pddl/problem_gen_plus_scanner_separated.py`
+  - `pddl/problem_gen_plus_relaxed.py`
+
 ### Validate PDDL vs native trace
 
 ```bash
