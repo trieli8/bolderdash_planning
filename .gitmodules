@@ -7,3 +7,6 @@
 [submodule "stonesandgem"]
 	path = stonesandgem
 	url = https://github.com/tuero/stonesngems_cpp
+[submodule "planners/pddl-plus/enhsp"]
+	path = planners/pddl-plus/enhsp
+	url = https://github.com/hstairs/enhsp
