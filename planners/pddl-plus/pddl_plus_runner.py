@@ -66,6 +66,7 @@ def _build_command(
     domain: Path,
     problem: Path,
     planner_args: str,
+    java_opts: str,
     cmd_template: Optional[str],
     enhsp_jar: Optional[Path],
     optic_bin: Optional[Path],
@@ -89,6 +90,7 @@ def _build_command(
                 )
 
     extra = shlex.split(planner_args or "")
+    java_extra = shlex.split(java_opts or "")
 
     if planner == "enhsp":
         jar = enhsp_jar or _default_enhsp_jar(root)
@@ -117,7 +119,7 @@ def _build_command(
             raise FileNotFoundError(
                 "Java runtime not found. Install OpenJDK and ensure `java` is on PATH, or install via Homebrew openjdk@17."
             )
-        cmd = [java_bin, "-jar", str(jar), "-o", str(domain), "-f", str(problem)] + extra
+        cmd = [java_bin] + java_extra + ["-jar", str(jar), "-o", str(domain), "-f", str(problem)] + extra
         return "enhsp", cmd
 
     if planner == "optic":
@@ -247,6 +249,7 @@ def solve(
     timeout: Optional[int] = None,
     stream: bool = False,
     planner_args: str = "",
+    java_opts: str = "",
     cmd_template: Optional[str] = None,
     enhsp_jar: Optional[Path] = None,
     optic_bin: Optional[Path] = None,
@@ -257,6 +260,7 @@ def solve(
         domain=domain,
         problem=problem,
         planner_args=planner_args,
+        java_opts=java_opts,
         cmd_template=cmd_template,
         enhsp_jar=enhsp_jar,
         optic_bin=optic_bin,
@@ -422,7 +426,12 @@ def main() -> int:
     ap.add_argument("--planner", choices=["auto", "enhsp", "optic", "cmd"], default="auto")
     ap.add_argument("--timeout", type=int, default=None)
     ap.add_argument("--stream", action="store_true")
-    ap.add_argument("--planner-args", default="")
+    ap.add_argument("--planner-args", default="-h ngc -s gbfs -dap")
+    ap.add_argument(
+        "--java-opts",
+        default="",
+        help="Extra Java VM options for ENHSP. Use '--java-opts=-Xmx8g' for leading-dash opts.",
+    )
     ap.add_argument("--cmd-template", default=None)
     ap.add_argument("--enhsp-jar", type=Path, default=None)
     ap.add_argument("--optic-bin", type=Path, default=None)
@@ -439,6 +448,7 @@ def main() -> int:
         timeout=args.timeout,
         stream=args.stream,
         planner_args=args.planner_args,
+        java_opts=args.java_opts,
         cmd_template=args.cmd_template,
         enhsp_jar=args.enhsp_jar.resolve() if args.enhsp_jar else None,
         optic_bin=args.optic_bin.resolve() if args.optic_bin else None,

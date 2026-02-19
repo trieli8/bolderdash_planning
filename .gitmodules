@@ -10,3 +10,6 @@
 [submodule "planners/pddl-plus/enhsp"]
 	path = planners/pddl-plus/enhsp
 	url = https://github.com/hstairs/enhsp
+[submodule "planners/powerlifted"]
+	path = planners/powerlifted
+	url = https://github.com/abcorrea/powerlifted

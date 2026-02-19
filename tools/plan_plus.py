@@ -199,7 +199,16 @@ def main() -> int:
     ap.add_argument("--domain", type=Path, help="Domain PDDL (required unless using --play-plan)")
     ap.add_argument("--problem", type=Path, help="Problem PDDL or level .txt (required unless using --play-plan)")
     ap.add_argument("--planner", choices=["auto", "enhsp", "optic", "cmd"], default="auto")
-    ap.add_argument("--planner-args", default="", help="Extra args passed to the selected planner binary/jar")
+    ap.add_argument(
+        "--planner-args",
+        default="-h ngc -s gbfs -dap",
+        help="Extra args passed to the selected planner binary/jar (default: '-h ngc -s gbfs -dap').",
+    )
+    ap.add_argument(
+        "--java-opts",
+        default="",
+        help="Extra Java VM options for ENHSP. Use '--java-opts=-Xmx8g' for leading-dash opts.",
+    )
     ap.add_argument("--cmd-template", default=None, help="Custom planner command template for --planner cmd; use {domain} and {problem}")
     ap.add_argument("--enhsp-jar", type=Path, default=None)
     ap.add_argument("--optic-bin", type=Path, default=None)
@@ -267,6 +276,7 @@ def main() -> int:
             timeout=args.timeout,
             stream=args.stream,
             planner_args=args.planner_args,
+            java_opts=args.java_opts,
             cmd_template=args.cmd_template,
             enhsp_jar=args.enhsp_jar.resolve() if args.enhsp_jar else None,
             optic_bin=args.optic_bin.resolve() if args.optic_bin else None,
@@ -292,6 +302,7 @@ def main() -> int:
                     timeout=args.timeout,
                     stream=args.stream,
                     planner_args=args.planner_args,
+                    java_opts=args.java_opts,
                     cmd_template=args.cmd_template,
                     enhsp_jar=args.enhsp_jar.resolve() if args.enhsp_jar else None,
                     optic_bin=args.optic_bin.resolve() if args.optic_bin else None,

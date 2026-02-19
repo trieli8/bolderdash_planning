@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Generate compact PDDL problems for domain_plus_scanner_separated.pddl.
-
-ENHSP is much more stable on the compact untyped encoding used by
-problem_gen_plus_from_domain.py, so this scanner-separated plus generator
-reuses that layout while targeting the scanner-plus domain name.
-"""
+"""Generate compact PDDL problems for domain_plus_scanner_separated.pddl."""
 
 from __future__ import annotations
 
@@ -25,10 +20,10 @@ def _read_level(level_input: str) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description='Convert a Stones & Gems level into a compact PDDL+ scanner-separated problem.')
+    ap = argparse.ArgumentParser(description='Convert a Stones & Gems level into a compact scanner-separated PDDL+ problem.')
     ap.add_argument('level_input', help='Level string or .txt path')
     ap.add_argument('-p', '--problem-name', default='')
-    ap.add_argument('-d', '--domain-name', default='mine-tick-gravity-plus-scanner')
+    ap.add_argument('-d', '--domain-name', default='mine-tick-gravity-plus-scanner-separated')
     args = ap.parse_args()
 
     if not args.problem_name:
