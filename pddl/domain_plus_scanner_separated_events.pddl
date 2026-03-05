@@ -1,4 +1,4 @@
-(define (domain mine-tick-gravity-plus-scanner-separated)
+(define (domain mine-tick-gravity-plus-scanner-separated-events)
   (:requirements :strips :negative-preconditions :disjunctive-preconditions :universal-preconditions :conditional-effects :action-costs :processes :events)
 
 
@@ -296,7 +296,7 @@
   ;; ======================================================
   ;; SCANNER CHECKS
   ;; ======================================================
-    (:action forced-can_fall
+    (:event forced-can_fall
         :parameters (?c ?down)
         :precondition (and
             (scan-required)
@@ -316,7 +316,7 @@
         )
     )
 
-    (:action forced-not_fall
+    (:event forced-not_fall
         :parameters (?c ?down)
         :precondition (and
             (scan-required)
@@ -336,7 +336,7 @@
         )
     )
 
-    (:action forced-not_fall_no_down
+    (:event forced-not_fall_no_down
         :parameters (?c)
         :precondition (and
             (scan-required)
@@ -353,7 +353,7 @@
         )
     )
 
-    (:action forced-can_roll_left
+    (:event forced-can_roll_left
         :parameters (?c ?left ?down_left ?down)
         :precondition (and
             (scan-required)
@@ -380,7 +380,7 @@
         )
     )
 
-    (:action forced-not_roll_left
+    (:event forced-not_roll_left
         :parameters (?c ?left ?down_left ?down)
         :precondition (and
             (scan-required)
@@ -413,7 +413,7 @@
         )
     )
 
-    (:action forced-not_roll_left_default
+    (:event forced-not_roll_left_default
         :parameters (?c)
         :precondition (and
             (scan-required)
@@ -429,7 +429,7 @@
         )
     )
 
-    (:action forced-can_roll_right
+    (:event forced-can_roll_right
         :parameters (?c ?right ?down_right ?down)
         :precondition (and
             (scan-required)
@@ -456,7 +456,7 @@
         )
     )
 
-    (:action forced-not_roll_right
+    (:event forced-not_roll_right
         :parameters (?c ?right ?down_right ?down)
         :precondition (and
             (scan-required)
@@ -489,7 +489,7 @@
         )
     )
 
-    (:action forced-not_roll_right_default
+    (:event forced-not_roll_right_default
         :parameters (?c)
         :precondition (and
             (scan-required)
@@ -508,7 +508,7 @@
   ;; ======================================================
   ;; STONE/GEM MOVEMENT
   ;; ======================================================
-    (:action forced-stone_fall
+    (:event forced-stone_fall
         :parameters (?c ?down)
         :precondition (and
             (ready_to_move)
@@ -535,7 +535,7 @@
         )
     )
 
-    (:action forced-gem_fall
+    (:event forced-gem_fall
         :parameters (?c ?down)
         :precondition (and
             (ready_to_move)
@@ -562,7 +562,7 @@
         )
     )
 
-    (:action forced-stone_roll_left
+    (:event forced-stone_roll_left
         :parameters (?c ?left )
 
         :precondition (and
@@ -592,7 +592,7 @@
         )
     )
     
-    (:action forced-gem_roll_left
+    (:event forced-gem_roll_left
         :parameters (?c ?left )
 
         :precondition (and
@@ -623,7 +623,7 @@
     )
 
 
-    (:action forced-stone_roll_right
+    (:event forced-stone_roll_right
         :parameters (?c ?right )
 
         :precondition (and
@@ -655,7 +655,7 @@
         )
     )
     
-    (:action forced-gem_roll_right
+    (:event forced-gem_roll_right
         :parameters (?c ?right )
 
         :precondition (and
@@ -686,7 +686,7 @@
         )
     )
 
-    (:action forced-stone_gem_noop
+    (:event forced-stone_gem_noop
         :parameters (?c )
 
         :precondition (and

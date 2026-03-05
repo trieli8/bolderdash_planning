@@ -91,6 +91,23 @@ python tools/plan.py --play-plan plans/<problem>/fd.plan [--play-level <level.tx
 - Plans/logs are saved under `plans/<problem_name>/` (e.g., `fd.plan`, `fd.play.plan`, `ff.plan`, `*.stdout.txt`).
 - `--play-output` opens the first solved plan in `stonesandgem/build/bin/plan_player` after planning.
 
+### Classic PDDL benchmark sweep
+
+```bash
+python tools/bench_classic.py \
+  --domains pddl/domain.pddl pddl/domain_scanner_separated.pddl \
+  --maps pddl/level_5_5.txt pddl/level_10_5.txt \
+  --variants ff,fd,fd-opt \
+  --timeout 120
+```
+
+- Benchmarks classic planner variants (`ff`, `fd`, `fd-opt`, `fd-any`) across maps.
+- Supports multiple domains in one sweep via `--domains` (or repeated `--domain`).
+- Writes CSV results to `plans/classic-bench/` (or `--output-csv`).
+- Saves per-run plans under `plans/<problem>/` with domain-tagged names like
+  `classic-bench-d_domain_scanner_separated-v_fd.plan`.
+- Writes benchmark logs to `results/classic-bench/run_<timestamp>/` (or `--results-dir`) with filenames including domain + problem + variant.
+
 ### PDDL+ planning wrapper
 
 ```bash
@@ -99,6 +116,10 @@ python tools/plan_plus.py --domain pddl/domain_plus_from_domain.pddl --problem p
 
 # Scanner-separated PDDL+ variant
 python tools/plan_plus.py --domain pddl/domain_plus_scanner_separated.pddl --problem pddl/level_5_5.txt
+
+# Increase Java heap for larger problems
+python tools/plan_plus.py --domain pddl/domain_plus_scanner_separated.pddl --problem pddl/level_10_10.txt \
+  --java-opts=-Xmx8g
 
 # Custom planner command template
 python tools/plan_plus.py --planner cmd \
@@ -111,6 +132,64 @@ python tools/plan_plus.py --planner cmd \
   - `pddl/problem_gen_plus_from_domain.py`
   - `pddl/problem_gen_plus_scanner_separated.py`
   - `pddl/problem_gen_plus_relaxed.py`
+
+### PDDL+ heuristic/search sweep
+
+```bash
+python tools/bench_plus.py \
+  --domains pddl/domain_plus_from_domain.pddl pddl/domain_plus_scanner_separated.pddl \
+  --maps pddl/level_5_5.txt pddl/level_10_5.txt pddl/level_10_10.txt \
+  --heuristics blind,hadd,hmax \
+  --searches gbfs,WAStar \
+  --enhsp-jar planners/pddl-plus/enhsp/enhsp-dist/enhsp.jar \
+  --java-opts=-Xmx8g \
+  --timeout 120 \
+  --base-args "-pe -dap"
+```
+
+- Sweeps all heuristic/search combinations over all listed maps.
+- Supports multiple domains in one sweep via `--domains` (or repeated `--domain`).
+- Use `--java-opts` to pass JVM options to ENHSP (e.g., `-Xmx8g` for larger maps).
+- Writes a CSV summary to `plans/plus-bench/` (or `--output-csv` if provided).
+- Saves per-run plans under `plans/<problem>/` with domain-tagged names like
+  `plus-enhsp-bench-d_domain_plus_scanner_separated-h_hadd-s_gbfs.plan`.
+- Writes benchmark logs to `results/plus-bench/run_<timestamp>/` (or `--results-dir`) with filenames including domain + problem + h + s.
+
+### Plot PDDL+ benchmark runtime
+
+```bash
+# Use latest CSV automatically
+python tools/plot_plus_bench_runtime.py
+
+# Or choose a specific CSV
+python tools/plot_plus_bench_runtime.py \
+  --csv plans/plus-bench/enhsp_sweep_20260218_201357.csv \
+  --out plans/plus-bench/enhsp_sweep_20260218_201357.runtime.svg
+
+# Compare by domain+problem labels on x-axis
+python tools/plot_plus_bench_runtime.py \
+  --csv plans/plus-bench/enhsp_sweep_20260218_201357.csv \
+  --x-axis domain_problem
+```
+
+- X-axis: problem
+- Y-axis: runtime (seconds)
+- Fill color: heuristic (`h`)
+- Marker shape: search strategy (`s`)
+- Outline color: domain (when multiple domains are present)
+- `timeout` and `error` rows are excluded by default (use `--include-failures` to include them)
+
+### Plot PDDL+ timing breakdown
+
+```bash
+# Use a benchmark results folder with stdout files
+python tools/plot_plus_time_breakdown.py \
+  --results-dir results/plus-bench/run_20260219_091405 \
+  --out results/plus-bench/run_20260219_091405/time_breakdown.svg
+```
+
+- Creates a stacked bar chart from `*.stdout.txt` files.
+- Stack segments: `Grounding Time`, `Planning Time`, `Heuristic Time`, `Search Time`.
 
 ### Validate PDDL vs native trace
 

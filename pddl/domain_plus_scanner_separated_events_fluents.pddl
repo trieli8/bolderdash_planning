@@ -1,4 +1,4 @@
-(define (domain mine-tick-gravity-plus-scanner-separated)
+(define (domain mine-tick-gravity-plus-scanner-separated-events-fluents)
   (:requirements :strips :negative-preconditions :disjunctive-preconditions :universal-preconditions :conditional-effects :action-costs :processes :events)
 
 
@@ -24,6 +24,14 @@
 
     ;; updated-in-this-tick flags
     (updated ?c)
+
+    ;; entity identities and per-entity location mirrors
+    (agent-entity ?a)
+    (stone-entity ?s)
+    (gem-entity ?g)
+    (agent-at-obj ?a ?c)
+    (stone-at ?s ?c)
+    (gem-at ?g ?c)
 
     ;; cell contents
     (agent-at ?c)
@@ -51,6 +59,10 @@
   (:functions
     (total-cost)
     (sim-time)
+    (x ?e)
+    (y ?e)
+    (cx ?c)
+    (cy ?c)
   )
 
   ;; Keep a running clock while scan is active (PDDL+ process).
@@ -78,10 +90,12 @@
     )
 
     (:action move_empty
-        :parameters (?from ?to)
+        :parameters (?from ?to ?a)
         :precondition (and
             (agent-alive)
+            (agent-entity ?a)
             (agent-at ?from)
+            (agent-at-obj ?a ?from)
                 (or (up ?from ?to)
                 (down ?from ?to)
                 (right-of ?to ?from)
@@ -92,6 +106,10 @@
         :effect (and
             (not (agent-at ?from))
             (agent-at ?to)
+            (not (agent-at-obj ?a ?from))
+            (agent-at-obj ?a ?to)
+            (assign (x ?a) (cx ?to))
+            (assign (y ?a) (cy ?to))
 
             (empty ?from)
             (not (empty ?to))
@@ -104,10 +122,12 @@
 
     ;; Move into dirt (mines it to empty)
     (:action move_into_dirt
-        :parameters (?from ?to)
+        :parameters (?from ?to ?a)
         :precondition (and
             (agent-alive)
+            (agent-entity ?a)
             (agent-at ?from)
+            (agent-at-obj ?a ?from)
                 (or (up ?from ?to)
                 (down ?from ?to)
                 (right-of ?to ?from)
@@ -118,6 +138,10 @@
         :effect (and
             (not (agent-at ?from))
             (agent-at ?to)
+            (not (agent-at-obj ?a ?from))
+            (agent-at-obj ?a ?to)
+            (assign (x ?a) (cx ?to))
+            (assign (y ?a) (cy ?to))
 
             (not (dirt ?to))
 
@@ -132,25 +156,36 @@
 
     ;; Move into gem (collect it -> got-gem)
     (:action move_into_gem
-        :parameters (?from ?to)
+        :parameters (?from ?to ?a ?g)
         :precondition (and
             (agent-alive)
+            (agent-entity ?a)
+            (gem-entity ?g)
             (agent-at ?from)
+            (agent-at-obj ?a ?from)
                 (or (up ?from ?to)
                 (down ?from ?to)
                 (right-of ?to ?from)
                 (right-of ?from ?to))
             (gem ?to)
+            (gem-at ?g ?to)
             (scan-complete)
         )
         :effect (and
             (not (agent-at ?from))
             (agent-at ?to)
+            (not (agent-at-obj ?a ?from))
+            (agent-at-obj ?a ?to)
+            (assign (x ?a) (cx ?to))
+            (assign (y ?a) (cy ?to))
 
             (empty ?from)
             (not (empty ?to))
 
             (not (gem ?to))
+            (not (gem-at ?g ?to))
+            (assign (x ?g) -1)
+            (assign (y ?g) -1)
             (not (falling ?to))
 
             (got-gem)
@@ -162,14 +197,18 @@
     )
 
     (:action move_push_rock
-        :parameters (?from ?to ?stone_dest)
+        :parameters (?from ?to ?stone_dest ?a ?s)
         :precondition (and
             (agent-alive)
+            (agent-entity ?a)
+            (stone-entity ?s)
             (agent-at ?from)
+            (agent-at-obj ?a ?from)
             (or
                 (and (right-of ?to ?from) (right-of ?stone_dest ?to))
                 (and (right-of ?from ?to) (right-of ?to ?stone_dest)))
         (stone ?to)
+        (stone-at ?s ?to)
         (empty ?stone_dest)
         (not (falling ?to))
         (scan-complete)
@@ -177,12 +216,20 @@
         :effect (and
             (not (agent-at ?from))
             (agent-at ?to)
+            (not (agent-at-obj ?a ?from))
+            (agent-at-obj ?a ?to)
+            (assign (x ?a) (cx ?to))
+            (assign (y ?a) (cy ?to))
 
             (not (empty ?to))
             (empty ?from)
 
             (not (stone ?to))
             (stone ?stone_dest)
+            (not (stone-at ?s ?to))
+            (stone-at ?s ?stone_dest)
+            (assign (x ?s) (cx ?stone_dest))
+            (assign (y ?s) (cy ?stone_dest))
 
             (not (empty ?stone_dest))
             (not (falling ?stone_dest))
@@ -296,7 +343,7 @@
   ;; ======================================================
   ;; SCANNER CHECKS
   ;; ======================================================
-    (:action forced-can_fall
+    (:event forced-can_fall
         :parameters (?c ?down)
         :precondition (and
             (scan-required)
@@ -316,7 +363,7 @@
         )
     )
 
-    (:action forced-not_fall
+    (:event forced-not_fall
         :parameters (?c ?down)
         :precondition (and
             (scan-required)
@@ -336,7 +383,7 @@
         )
     )
 
-    (:action forced-not_fall_no_down
+    (:event forced-not_fall_no_down
         :parameters (?c)
         :precondition (and
             (scan-required)
@@ -353,7 +400,7 @@
         )
     )
 
-    (:action forced-can_roll_left
+    (:event forced-can_roll_left
         :parameters (?c ?left ?down_left ?down)
         :precondition (and
             (scan-required)
@@ -380,7 +427,7 @@
         )
     )
 
-    (:action forced-not_roll_left
+    (:event forced-not_roll_left
         :parameters (?c ?left ?down_left ?down)
         :precondition (and
             (scan-required)
@@ -413,7 +460,7 @@
         )
     )
 
-    (:action forced-not_roll_left_default
+    (:event forced-not_roll_left_default
         :parameters (?c)
         :precondition (and
             (scan-required)
@@ -429,7 +476,7 @@
         )
     )
 
-    (:action forced-can_roll_right
+    (:event forced-can_roll_right
         :parameters (?c ?right ?down_right ?down)
         :precondition (and
             (scan-required)
@@ -456,7 +503,7 @@
         )
     )
 
-    (:action forced-not_roll_right
+    (:event forced-not_roll_right
         :parameters (?c ?right ?down_right ?down)
         :precondition (and
             (scan-required)
@@ -489,7 +536,7 @@
         )
     )
 
-    (:action forced-not_roll_right_default
+    (:event forced-not_roll_right_default
         :parameters (?c)
         :precondition (and
             (scan-required)
@@ -508,13 +555,15 @@
   ;; ======================================================
   ;; STONE/GEM MOVEMENT
   ;; ======================================================
-    (:action forced-stone_fall
-        :parameters (?c ?down)
+    (:event forced-stone_fall
+        :parameters (?c ?down ?s)
         :precondition (and
             (ready_to_move)
             (scan-required)
             (scan-at ?c)
             (not (updated ?c))
+            (stone-entity ?s)
+            (stone-at ?s ?c)
 
             (down ?c ?down)
             (stone ?c)
@@ -525,23 +574,29 @@
             (not (stone ?c))
             (not (falling ?c))
             (empty ?c)
+            (not (stone-at ?s ?c))
 
             (stone ?down)
             (falling ?down)
             (not (empty ?down))
+            (stone-at ?s ?down)
+            (assign (x ?s) (cx ?down))
+            (assign (y ?s) (cy ?down))
 
             (updated ?down)
             (updated ?c)
         )
     )
 
-    (:action forced-gem_fall
-        :parameters (?c ?down)
+    (:event forced-gem_fall
+        :parameters (?c ?down ?g)
         :precondition (and
             (ready_to_move)
             (scan-required)
             (scan-at ?c)
             (not (updated ?c))
+            (gem-entity ?g)
+            (gem-at ?g ?c)
 
             (down ?c ?down)
             (gem ?c)
@@ -552,24 +607,30 @@
             (not (gem ?c))
             (not (falling ?c))
             (empty ?c)
+            (not (gem-at ?g ?c))
 
             (gem ?down)
             (falling ?down)
             (not (empty ?down))
+            (gem-at ?g ?down)
+            (assign (x ?g) (cx ?down))
+            (assign (y ?g) (cy ?down))
 
             (updated ?down)
             (updated ?c)
         )
     )
 
-    (:action forced-stone_roll_left
-        :parameters (?c ?left )
+    (:event forced-stone_roll_left
+        :parameters (?c ?left ?s)
 
         :precondition (and
             (ready_to_move)
             (scan-required)
             (scan-at ?c)
             (not (updated ?c))
+            (stone-entity ?s)
+            (stone-at ?s ?c)
 
             (right-of ?left ?c)
             (stone ?c)
@@ -582,24 +643,30 @@
             (not (stone ?c))
             (not (falling ?c))
             (empty ?c)
+            (not (stone-at ?s ?c))
 
             (stone ?left)
             (falling ?left)
             (not (empty ?left))
+            (stone-at ?s ?left)
+            (assign (x ?s) (cx ?left))
+            (assign (y ?s) (cy ?left))
 
             (updated ?c)
             (updated ?left)
         )
     )
     
-    (:action forced-gem_roll_left
-        :parameters (?c ?left )
+    (:event forced-gem_roll_left
+        :parameters (?c ?left ?g)
 
         :precondition (and
             (ready_to_move)
             (scan-required)
             (scan-at ?c)
             (not (updated ?c))
+            (gem-entity ?g)
+            (gem-at ?g ?c)
 
             (right-of ?left ?c)
             (gem ?c)
@@ -612,10 +679,14 @@
             (not (gem ?c))
             (not (falling ?c))
             (empty ?c)
+            (not (gem-at ?g ?c))
 
             (gem ?left)
             (falling ?left)
             (not (empty ?left))
+            (gem-at ?g ?left)
+            (assign (x ?g) (cx ?left))
+            (assign (y ?g) (cy ?left))
 
             (updated ?c)
             (updated ?left)
@@ -623,14 +694,16 @@
     )
 
 
-    (:action forced-stone_roll_right
-        :parameters (?c ?right )
+    (:event forced-stone_roll_right
+        :parameters (?c ?right ?s)
 
         :precondition (and
             (ready_to_move)
             (scan-required)
             (scan-at ?c)
             (not (updated ?c))
+            (stone-entity ?s)
+            (stone-at ?s ?c)
 
             (right-of ?c ?right)
             (stone ?c)
@@ -645,24 +718,30 @@
             (not (stone ?c))
             (not (falling ?c))
             (empty ?c)
+            (not (stone-at ?s ?c))
 
             (stone ?right)
             (falling ?right)
             (not (empty ?right))
+            (stone-at ?s ?right)
+            (assign (x ?s) (cx ?right))
+            (assign (y ?s) (cy ?right))
 
             (updated ?c)
             (updated ?right)
         )
     )
     
-    (:action forced-gem_roll_right
-        :parameters (?c ?right )
+    (:event forced-gem_roll_right
+        :parameters (?c ?right ?g)
 
         :precondition (and
             (ready_to_move)
             (scan-required)
             (scan-at ?c)
             (not (updated ?c))
+            (gem-entity ?g)
+            (gem-at ?g ?c)
 
             (right-of ?c ?right)
             (gem ?c)
@@ -676,17 +755,21 @@
             (not (gem ?c))
             (not (falling ?c))
             (empty ?c)
+            (not (gem-at ?g ?c))
 
             (gem ?right)
             (falling ?right)
             (not (empty ?right))
+            (gem-at ?g ?right)
+            (assign (x ?g) (cx ?right))
+            (assign (y ?g) (cy ?right))
 
             (updated ?c)
             (updated ?right)
         )
     )
 
-    (:action forced-stone_gem_noop
+    (:event forced-stone_gem_noop
         :parameters (?c )
 
         :precondition (and

@@ -6,27 +6,29 @@
     :conditional-effects
     :numeric-fluents
     :action-costs
+    :processes
     :events
   )
 
   (:predicates
+    ;; layout / topology
     (up ?from ?to)
     (down ?from ?to)
     (right-of ?from ?to)
 
-    ;; Scan ordering / tick control
+    ;; cell tags
+    (border-cell ?c)
+    (real-cell ?c)
+
+    ;; retained for compatibility with existing generated problems
     (first-cell ?c)
     (last-cell ?c)
     (next-cell ?c1 ?c2)
     (bottom ?c)
-
     (scan-at ?c)
-    (scan-required)
-    (scan-complete)
     (scan-active)
-    (updated ?c)
 
-    ;; World state
+    ;; cell contents
     (agent-at ?c)
     (empty ?c)
     (dirt ?c)
@@ -35,9 +37,28 @@
     (falling ?c)
     (brick ?c)
 
+    ;; high-level state
     (agent-alive)
     (got-gem)
     (crushed)
+
+    ;; tick control
+    (scan-required)
+    (scan-complete)
+    (init-phase)
+
+    ;; non-scanner per-cell update control
+    (updated ?c)
+    (pending ?c)
+
+    ;; separated event checks (cell-scoped)
+    (can_fall ?c)
+    (can_roll_left ?c)
+    (can_roll_right ?c)
+    (check_fall ?c)
+    (check_roll_left ?c)
+    (check_roll_right ?c)
+    (ready_to_move ?c)
   )
 
   (:functions
@@ -45,11 +66,10 @@
     (sim-time)
   )
 
-  ;; Keep time flowing while scan is active so autonomous events progress
-  ;; scan advancement without planner choices.
-  (:process scan-clock
+  ;; Tick-local clock. Time only matters for phase boundaries/end-tick.
+  (:process tick-clock
     :parameters ()
-    :precondition (scan-active)
+    :precondition (scan-required)
     :effect (increase (sim-time) #t)
   )
 
@@ -62,10 +82,13 @@
     :precondition (and
       (agent-alive)
       (scan-complete)
+      (not (scan-required))
     )
     :effect (and
       (scan-required)
       (not (scan-complete))
+      (init-phase)
+      (assign (sim-time) 0)
       (increase (total-cost) 1)
     )
   )
@@ -75,6 +98,9 @@
     :precondition (and
       (agent-alive)
       (scan-complete)
+      (not (scan-required))
+      (real-cell ?from)
+      (real-cell ?to)
       (agent-at ?from)
       (or
         (up ?from ?to)
@@ -91,6 +117,8 @@
       (not (empty ?to))
       (scan-required)
       (not (scan-complete))
+      (init-phase)
+      (assign (sim-time) 0)
       (increase (total-cost) 1)
     )
   )
@@ -100,6 +128,9 @@
     :precondition (and
       (agent-alive)
       (scan-complete)
+      (not (scan-required))
+      (real-cell ?from)
+      (real-cell ?to)
       (agent-at ?from)
       (or
         (up ?from ?to)
@@ -117,6 +148,8 @@
       (not (empty ?to))
       (scan-required)
       (not (scan-complete))
+      (init-phase)
+      (assign (sim-time) 0)
       (increase (total-cost) 1)
     )
   )
@@ -126,6 +159,9 @@
     :precondition (and
       (agent-alive)
       (scan-complete)
+      (not (scan-required))
+      (real-cell ?from)
+      (real-cell ?to)
       (agent-at ?from)
       (or
         (up ?from ?to)
@@ -145,6 +181,8 @@
       (got-gem)
       (scan-required)
       (not (scan-complete))
+      (init-phase)
+      (assign (sim-time) 0)
       (increase (total-cost) 1)
     )
   )
@@ -154,6 +192,10 @@
     :precondition (and
       (agent-alive)
       (scan-complete)
+      (not (scan-required))
+      (real-cell ?from)
+      (real-cell ?to)
+      (real-cell ?stone_dest)
       (agent-at ?from)
       (or
         (and (right-of ?to ?from) (right-of ?stone_dest ?to))
@@ -172,145 +214,354 @@
       (stone ?stone_dest)
       (not (empty ?stone_dest))
       (not (falling ?stone_dest))
+      (updated ?to)
       (scan-required)
       (not (scan-complete))
+      (init-phase)
+      (assign (sim-time) 0)
       (increase (total-cost) 1)
     )
   )
 
   ;; ======================================================
-  ;; TICK PROGRESSION
-  ;; Every cell must be consumed before movement can happen again.
+  ;; TICK PHASE MANAGEMENT
   ;; ======================================================
 
-  (:action start_scan
-    :parameters (?start)
-    :precondition (and
-      (scan-required)
-      (not (scan-active))
-      (first-cell ?start)
-    )
-    :effect (and
-      (scan-at ?start)
-      (scan-active)
-    )
-  )
-
-  (:action advance_scan
-    :parameters (?c ?next)
-    :precondition (and
-      (scan-required)
-      (scan-active)
-      (scan-at ?c)
-      (updated ?c)
-      (next-cell ?c ?next)
-    )
-    :effect (and
-      (not (scan-at ?c))
-      (scan-at ?next)
-      (not (updated ?c))
-    )
-  )
-
-  (:action end_scan
+  ;; Clear stale per-cell control flags from previous tick.
+  (:event ev_clear_cell_flags
     :parameters (?c)
     :precondition (and
       (scan-required)
-      (scan-active)
-      (scan-at ?c)
-      (updated ?c)
-      (last-cell ?c)
+      (init-phase)
+      (or
+        (updated ?c)
+        (pending ?c)
+        (can_fall ?c)
+        (can_roll_left ?c)
+        (can_roll_right ?c)
+        (check_fall ?c)
+        (check_roll_left ?c)
+        (check_roll_right ?c)
+        (ready_to_move ?c)
+      )
     )
     :effect (and
-      (not (scan-at ?c))
       (not (updated ?c))
-      (not (scan-required))
-      (scan-complete)
-      (not (scan-active))
+      (not (pending ?c))
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
+      (not (can_roll_right ?c))
+      (not (check_fall ?c))
+      (not (check_roll_left ?c))
+      (not (check_roll_right ?c))
+      (not (ready_to_move ?c))
+    )
+  )
+
+  ;; Give one small time step for flag-cleanup, then enter physics phase.
+  (:event ev_start_physics
+    :parameters ()
+    :precondition (and
+      (scan-required)
+      (init-phase)
+      (>= (sim-time) 0.1)
+    )
+    :effect (and
+      (not (init-phase))
+      (assign (sim-time) 0)
     )
   )
 
   ;; ======================================================
-  ;; PHYSICS EVENTS (AUTOMATIC)
-  ;; roll/fall/crush mechanics are events, not planner actions.
+  ;; SEPARATED PHYSICS CHECKS (NON-SCANNER)
   ;; ======================================================
 
-  (:event ev_mark_passive_cell
+  ;; Mark only active (stone/gem) cells; no full-grid scan.
+  (:event ev_mark_active_cell
     :parameters (?c)
     :precondition (and
       (scan-required)
-      (scan-active)
-      (scan-at ?c)
+      (not (init-phase))
+      (or (stone ?c) (gem ?c))
       (not (updated ?c))
-      (or (empty ?c) (dirt ?c) (brick ?c) (agent-at ?c))
+      (not (pending ?c))
+      (not (check_fall ?c))
+      (not (check_roll_left ?c))
+      (not (check_roll_right ?c))
+      (not (ready_to_move ?c))
     )
-    :effect (updated ?c)
+    :effect (and
+      (pending ?c)
+      (check_fall ?c)
+    )
   )
+
+  (:event ev_can_fall
+    :parameters (?c ?down)
+    :precondition (and
+      (scan-required)
+      (not (init-phase))
+      (pending ?c)
+      (check_fall ?c)
+      (not (updated ?c))
+      (or (stone ?c) (gem ?c))
+      (down ?c ?down)
+      (empty ?down)
+    )
+    :effect (and
+      (can_fall ?c)
+      (not (check_fall ?c))
+      (ready_to_move ?c)
+    )
+  )
+
+  (:event ev_not_fall
+    :parameters (?c ?down)
+    :precondition (and
+      (scan-required)
+      (not (init-phase))
+      (pending ?c)
+      (check_fall ?c)
+      (not (updated ?c))
+      (or (stone ?c) (gem ?c))
+      (down ?c ?down)
+      (not (empty ?down))
+    )
+    :effect (and
+      (not (can_fall ?c))
+      (not (check_fall ?c))
+      (check_roll_left ?c)
+    )
+  )
+
+  (:event ev_can_roll_left
+    :parameters (?c ?left ?down_left ?down)
+    :precondition (and
+      (scan-required)
+      (not (init-phase))
+      (pending ?c)
+      (check_roll_left ?c)
+      (not (updated ?c))
+      (or (stone ?c) (gem ?c))
+      (right-of ?left ?c)
+      (down ?left ?down_left)
+      (down ?c ?down)
+      (not (agent-at ?down))
+      (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
+      (not (falling ?down))
+      (empty ?left)
+      (or (empty ?down_left) (updated ?down_left))
+    )
+    :effect (and
+      (can_roll_left ?c)
+      (not (check_roll_left ?c))
+      (ready_to_move ?c)
+    )
+  )
+
+  (:event ev_not_roll_left
+    :parameters (?c ?left ?down_left ?down)
+    :precondition (and
+      (scan-required)
+      (not (init-phase))
+      (pending ?c)
+      (check_roll_left ?c)
+      (not (updated ?c))
+      (or (stone ?c) (gem ?c))
+      (right-of ?left ?c)
+      (down ?left ?down_left)
+      (down ?c ?down)
+      (or
+        (agent-at ?down)
+        (and
+          (not (stone ?down))
+          (not (gem ?down))
+          (not (brick ?down))
+          (not (updated ?down))
+        )
+        (falling ?down)
+        (not (empty ?left))
+        (and (not (empty ?down_left)) (not (updated ?down_left)))
+      )
+    )
+    :effect (and
+      (not (can_roll_left ?c))
+      (not (check_roll_left ?c))
+      (check_roll_right ?c)
+    )
+  )
+
+  (:event ev_not_roll_left_default
+    :parameters (?c)
+    :precondition (and
+      (scan-required)
+      (not (init-phase))
+      (pending ?c)
+      (check_roll_left ?c)
+      (not (updated ?c))
+      (or (stone ?c) (gem ?c))
+    )
+    :effect (and
+      (not (can_roll_left ?c))
+      (not (check_roll_left ?c))
+      (check_roll_right ?c)
+    )
+  )
+
+  (:event ev_can_roll_right
+    :parameters (?c ?right ?down_right ?down)
+    :precondition (and
+      (scan-required)
+      (not (init-phase))
+      (pending ?c)
+      (check_roll_right ?c)
+      (not (updated ?c))
+      (or (stone ?c) (gem ?c))
+      (right-of ?c ?right)
+      (down ?right ?down_right)
+      (down ?c ?down)
+      (not (agent-at ?down))
+      (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
+      (not (falling ?down))
+      (empty ?right)
+      (or (empty ?down_right) (updated ?down_right))
+    )
+    :effect (and
+      (can_roll_right ?c)
+      (not (check_roll_right ?c))
+      (ready_to_move ?c)
+    )
+  )
+
+  (:event ev_not_roll_right
+    :parameters (?c ?right ?down_right ?down)
+    :precondition (and
+      (scan-required)
+      (not (init-phase))
+      (pending ?c)
+      (check_roll_right ?c)
+      (not (updated ?c))
+      (or (stone ?c) (gem ?c))
+      (right-of ?c ?right)
+      (down ?right ?down_right)
+      (down ?c ?down)
+      (or
+        (agent-at ?down)
+        (and
+          (not (stone ?down))
+          (not (gem ?down))
+          (not (brick ?down))
+          (not (updated ?down))
+        )
+        (falling ?down)
+        (not (empty ?right))
+        (and (not (empty ?down_right)) (not (updated ?down_right)))
+      )
+    )
+    :effect (and
+      (not (can_roll_right ?c))
+      (not (check_roll_right ?c))
+      (ready_to_move ?c)
+    )
+  )
+
+  (:event ev_not_roll_right_default
+    :parameters (?c)
+    :precondition (and
+      (scan-required)
+      (not (init-phase))
+      (pending ?c)
+      (check_roll_right ?c)
+      (not (updated ?c))
+      (or (stone ?c) (gem ?c))
+    )
+    :effect (and
+      (not (can_roll_right ?c))
+      (not (check_roll_right ?c))
+      (ready_to_move ?c)
+    )
+  )
+
+  ;; ======================================================
+  ;; SEPARATED STONE/GEM MOVEMENT
+  ;; ======================================================
 
   (:event ev_stone_fall
-    :parameters (?c ?d)
+    :parameters (?c ?down)
     :precondition (and
       (scan-required)
-      (scan-active)
-      (scan-at ?c)
+      (not (init-phase))
+      (ready_to_move ?c)
+      (pending ?c)
       (not (updated ?c))
       (stone ?c)
-      (down ?c ?d)
-      (empty ?d)
-      (not (updated ?d))
+      (down ?c ?down)
+      (can_fall ?c)
     )
     :effect (and
       (not (stone ?c))
       (not (falling ?c))
       (empty ?c)
-      (stone ?d)
-      (falling ?d)
-      (not (empty ?d))
+      (stone ?down)
+      (falling ?down)
+      (not (empty ?down))
       (updated ?c)
-      (updated ?d)
+      (updated ?down)
+      (not (pending ?c))
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
+      (not (can_roll_right ?c))
+      (not (check_fall ?c))
+      (not (check_roll_left ?c))
+      (not (check_roll_right ?c))
+      (not (ready_to_move ?c))
     )
   )
 
   (:event ev_gem_fall
-    :parameters (?c ?d)
+    :parameters (?c ?down)
     :precondition (and
       (scan-required)
-      (scan-active)
-      (scan-at ?c)
+      (not (init-phase))
+      (ready_to_move ?c)
+      (pending ?c)
       (not (updated ?c))
       (gem ?c)
-      (down ?c ?d)
-      (empty ?d)
-      (not (updated ?d))
+      (down ?c ?down)
+      (can_fall ?c)
     )
     :effect (and
       (not (gem ?c))
       (not (falling ?c))
       (empty ?c)
-      (gem ?d)
-      (falling ?d)
-      (not (empty ?d))
+      (gem ?down)
+      (falling ?down)
+      (not (empty ?down))
       (updated ?c)
-      (updated ?d)
+      (updated ?down)
+      (not (pending ?c))
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
+      (not (can_roll_right ?c))
+      (not (check_fall ?c))
+      (not (check_roll_left ?c))
+      (not (check_roll_right ?c))
+      (not (ready_to_move ?c))
     )
   )
 
   (:event ev_stone_roll_left
-    :parameters (?c ?left ?down ?down_left)
+    :parameters (?c ?left)
     :precondition (and
       (scan-required)
-      (scan-active)
-      (scan-at ?c)
+      (not (init-phase))
+      (ready_to_move ?c)
+      (pending ?c)
       (not (updated ?c))
-      (stone ?c)
       (right-of ?left ?c)
-      (down ?c ?down)
-      (down ?left ?down_left)
-      (empty ?left)
-      (empty ?down_left)
-      (not (agent-at ?down))
-      (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
-      (not (falling ?down))
+      (stone ?c)
+      (can_roll_left ?c)
+      (not (can_fall ?c))
     )
     :effect (and
       (not (stone ?c))
@@ -320,25 +571,30 @@
       (falling ?left)
       (not (empty ?left))
       (updated ?c)
+      (updated ?left)
+      (not (pending ?c))
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
+      (not (can_roll_right ?c))
+      (not (check_fall ?c))
+      (not (check_roll_left ?c))
+      (not (check_roll_right ?c))
+      (not (ready_to_move ?c))
     )
   )
 
   (:event ev_gem_roll_left
-    :parameters (?c ?left ?down ?down_left)
+    :parameters (?c ?left)
     :precondition (and
       (scan-required)
-      (scan-active)
-      (scan-at ?c)
+      (not (init-phase))
+      (ready_to_move ?c)
+      (pending ?c)
       (not (updated ?c))
-      (gem ?c)
       (right-of ?left ?c)
-      (down ?c ?down)
-      (down ?left ?down_left)
-      (empty ?left)
-      (empty ?down_left)
-      (not (agent-at ?down))
-      (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
-      (not (falling ?down))
+      (gem ?c)
+      (can_roll_left ?c)
+      (not (can_fall ?c))
     )
     :effect (and
       (not (gem ?c))
@@ -348,33 +604,31 @@
       (falling ?left)
       (not (empty ?left))
       (updated ?c)
+      (updated ?left)
+      (not (pending ?c))
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
+      (not (can_roll_right ?c))
+      (not (check_fall ?c))
+      (not (check_roll_left ?c))
+      (not (check_roll_right ?c))
+      (not (ready_to_move ?c))
     )
   )
 
   (:event ev_stone_roll_right
-    :parameters (?c ?left ?right ?down ?down_left ?down_right)
+    :parameters (?c ?right)
     :precondition (and
       (scan-required)
-      (scan-active)
-      (scan-at ?c)
+      (not (init-phase))
+      (ready_to_move ?c)
+      (pending ?c)
       (not (updated ?c))
-      (not (updated ?right))
-      (stone ?c)
-      (right-of ?left ?c)
       (right-of ?c ?right)
-      (down ?c ?down)
-      (down ?left ?down_left)
-      (down ?right ?down_right)
-      (empty ?right)
-      (empty ?down_right)
-      (not (agent-at ?down))
-      (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
-      (not (falling ?down))
-      (or
-        (not (empty ?left))
-        (not (empty ?down_left))
-        (updated ?left)
-      )
+      (stone ?c)
+      (can_roll_right ?c)
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
     )
     :effect (and
       (not (stone ?c))
@@ -385,33 +639,30 @@
       (not (empty ?right))
       (updated ?c)
       (updated ?right)
+      (not (pending ?c))
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
+      (not (can_roll_right ?c))
+      (not (check_fall ?c))
+      (not (check_roll_left ?c))
+      (not (check_roll_right ?c))
+      (not (ready_to_move ?c))
     )
   )
 
   (:event ev_gem_roll_right
-    :parameters (?c ?left ?right ?down ?down_left ?down_right)
+    :parameters (?c ?right)
     :precondition (and
       (scan-required)
-      (scan-active)
-      (scan-at ?c)
+      (not (init-phase))
+      (ready_to_move ?c)
+      (pending ?c)
       (not (updated ?c))
-      (not (updated ?right))
-      (gem ?c)
-      (right-of ?left ?c)
       (right-of ?c ?right)
-      (down ?c ?down)
-      (down ?left ?down_left)
-      (down ?right ?down_right)
-      (empty ?right)
-      (empty ?down_right)
-      (not (agent-at ?down))
-      (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
-      (not (falling ?down))
-      (or
-        (not (empty ?left))
-        (not (empty ?down_left))
-        (updated ?left)
-      )
+      (gem ?c)
+      (can_roll_right ?c)
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
     )
     :effect (and
       (not (gem ?c))
@@ -422,6 +673,63 @@
       (not (empty ?right))
       (updated ?c)
       (updated ?right)
+      (not (pending ?c))
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
+      (not (can_roll_right ?c))
+      (not (check_fall ?c))
+      (not (check_roll_left ?c))
+      (not (check_roll_right ?c))
+      (not (ready_to_move ?c))
+    )
+  )
+
+  (:event ev_stone_gem_noop
+    :parameters (?c)
+    :precondition (and
+      (scan-required)
+      (not (init-phase))
+      (ready_to_move ?c)
+      (pending ?c)
+      (not (updated ?c))
+      (or (stone ?c) (gem ?c))
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
+      (not (can_roll_right ?c))
+    )
+    :effect (and
+      (updated ?c)
+      (not (falling ?c))
+      (not (pending ?c))
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
+      (not (can_roll_right ?c))
+      (not (check_fall ?c))
+      (not (check_roll_left ?c))
+      (not (check_roll_right ?c))
+      (not (ready_to_move ?c))
+    )
+  )
+
+  ;; Agent can occupy a cell that was marked active.
+  (:event ev_agent_noop
+    :parameters (?c)
+    :precondition (and
+      (scan-required)
+      (not (init-phase))
+      (pending ?c)
+      (agent-at ?c)
+    )
+    :effect (and
+      (updated ?c)
+      (not (pending ?c))
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
+      (not (can_roll_right ?c))
+      (not (check_fall ?c))
+      (not (check_roll_left ?c))
+      (not (check_roll_right ?c))
+      (not (ready_to_move ?c))
     )
   )
 
@@ -429,8 +737,8 @@
     :parameters (?c ?d)
     :precondition (and
       (scan-required)
-      (scan-active)
-      (scan-at ?c)
+      (not (init-phase))
+      (pending ?c)
       (not (updated ?c))
       (stone ?c)
       (falling ?c)
@@ -440,8 +748,16 @@
     :effect (and
       (not (agent-alive))
       (crushed)
-      (not (falling ?c))
       (updated ?c)
+      (not (falling ?c))
+      (not (pending ?c))
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
+      (not (can_roll_right ?c))
+      (not (check_fall ?c))
+      (not (check_roll_left ?c))
+      (not (check_roll_right ?c))
+      (not (ready_to_move ?c))
     )
   )
 
@@ -449,8 +765,8 @@
     :parameters (?c ?d)
     :precondition (and
       (scan-required)
-      (scan-active)
-      (scan-at ?c)
+      (not (init-phase))
+      (pending ?c)
       (not (updated ?c))
       (gem ?c)
       (falling ?c)
@@ -460,74 +776,32 @@
     :effect (and
       (not (agent-alive))
       (crushed)
-      (not (falling ?c))
       (updated ?c)
+      (not (falling ?c))
+      (not (pending ?c))
+      (not (can_fall ?c))
+      (not (can_roll_left ?c))
+      (not (can_roll_right ?c))
+      (not (check_fall ?c))
+      (not (check_roll_left ?c))
+      (not (check_roll_right ?c))
+      (not (ready_to_move ?c))
     )
   )
 
-  (:event ev_stone_settle
-    :parameters (?c ?d)
+  ;; End tick after one unit of autonomous physics-time.
+  (:event ev_end_tick
+    :parameters ()
     :precondition (and
       (scan-required)
-      (scan-active)
-      (scan-at ?c)
-      (not (updated ?c))
-      (stone ?c)
-      (down ?c ?d)
-      (not (empty ?d))
+      (not (init-phase))
+      (>= (sim-time) 1)
     )
     :effect (and
-      (not (falling ?c))
-      (updated ?c)
-    )
-  )
-
-  (:event ev_gem_settle
-    :parameters (?c ?d)
-    :precondition (and
-      (scan-required)
-      (scan-active)
-      (scan-at ?c)
-      (not (updated ?c))
-      (gem ?c)
-      (down ?c ?d)
-      (not (empty ?d))
-    )
-    :effect (and
-      (not (falling ?c))
-      (updated ?c)
-    )
-  )
-
-  (:event ev_stone_settle_bottom
-    :parameters (?c)
-    :precondition (and
-      (scan-required)
-      (scan-active)
-      (scan-at ?c)
-      (not (updated ?c))
-      (stone ?c)
-      (bottom ?c)
-    )
-    :effect (and
-      (not (falling ?c))
-      (updated ?c)
-    )
-  )
-
-  (:event ev_gem_settle_bottom
-    :parameters (?c)
-    :precondition (and
-      (scan-required)
-      (scan-active)
-      (scan-at ?c)
-      (not (updated ?c))
-      (gem ?c)
-      (bottom ?c)
-    )
-    :effect (and
-      (not (falling ?c))
-      (updated ?c)
+      (not (scan-required))
+      (not (init-phase))
+      (scan-complete)
+      (assign (sim-time) 0)
     )
   )
 )
