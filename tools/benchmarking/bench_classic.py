@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import json
+import os
 import re
 import subprocess
 import sys
@@ -12,6 +14,12 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
+
+TOOLS_DIR = Path(__file__).resolve().parents[1]
+BENCHMARK_DIR = Path(__file__).resolve().parent
+PLOT_RUNTIME_SCRIPT = BENCHMARK_DIR / "ploters" / "plot_plus_bench_runtime.py"
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
 
 from plan import (  # type: ignore
     PlanResult,
@@ -145,9 +153,39 @@ def default_variants(planner: str) -> List[str]:
     return ["ff", "fd"]
 
 
-def default_output_csv() -> Path:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return repo_root() / "plans" / "classic-bench" / f"classic_sweep_{stamp}.csv"
+def default_run_dir(stamp: str) -> Path:
+    return BENCHMARK_DIR / "results" / f"classic-bench_{stamp}"
+
+
+def default_output_csv(run_dir: Path) -> Path:
+    return run_dir / "classic_sweep.csv"
+
+
+def default_output_plot(run_dir: Path) -> Path:
+    return run_dir / "runtime.svg"
+
+
+def generate_runtime_plot(csv_path: Path, out_path: Path, title: str) -> bool:
+    if not PLOT_RUNTIME_SCRIPT.exists():
+        print(f"[WARN] Plot script not found, skipping plot: {PLOT_RUNTIME_SCRIPT}")
+        return False
+    cmd = [
+        sys.executable,
+        str(PLOT_RUNTIME_SCRIPT),
+        "--csv",
+        str(csv_path),
+        "--out",
+        str(out_path),
+        "--title",
+        title,
+        "--include-failures",
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        print(f"[WARN] Failed to generate plot: {detail}")
+        return False
+    return True
 
 
 @dataclass
@@ -163,6 +201,100 @@ class BenchRow:
     returncode: Optional[int]
     stdout_file: str
     stderr_file: str
+
+
+@dataclass(frozen=True)
+class BenchTask:
+    domain: Path
+    input_problem: Path
+    variant: str
+
+
+def run_task(
+    task: BenchTask,
+    *,
+    timeout: int,
+    stream: bool,
+    problem_gen: Optional[Path],
+    run_dir: Path,
+    plans_dir: Path,
+) -> BenchRow:
+    domain = task.domain
+    input_problem = task.input_problem
+    variant = task.variant
+    compiled_problem = input_problem
+    tmpdir: Optional[tempfile.TemporaryDirectory] = None
+
+    try:
+        if input_problem.suffix.lower() == ".txt":
+            compiled_problem, tmpdir = generate_problem_from_level(
+                input_problem, domain=domain, explicit_gen=problem_gen
+            )
+
+        domain_tag = safe_tag(domain.stem)
+        problem_name = normalise_problem_name(compiled_problem)
+        problem_tag = safe_tag(problem_name)
+        variant_tag = safe_tag(variant)
+        stdout_path = run_dir / (
+            f"classic-bench-d_{domain_tag}-p_{problem_tag}-v_{variant_tag}.stdout.txt"
+        )
+        stderr_path = run_dir / (
+            f"classic-bench-d_{domain_tag}-p_{problem_tag}-v_{variant_tag}.stderr.txt"
+        )
+
+        try:
+            result = variant_to_run(
+                variant=variant,
+                domain=domain,
+                problem=compiled_problem,
+                timeout=timeout,
+                stream=stream,
+            )
+        except Exception as exc:
+            write_text_file(stdout_path, "")
+            write_text_file(stderr_path, str(exc))
+            return BenchRow(
+                domain=str(domain),
+                input_problem=str(input_problem),
+                compiled_problem=str(compiled_problem),
+                variant=variant,
+                planner=variant,
+                status="error",
+                actions=0,
+                time_sec=0.0,
+                returncode=None,
+                stdout_file=str(stdout_path),
+                stderr_file=str(stderr_path),
+            )
+
+        elapsed = float(result.metrics.get("time_sec", 0.0) or 0.0)
+        returncode = result.metrics.get("returncode")
+
+        out_dir = plans_dir / problem_name
+        tag = f"classic-bench-d_{domain_tag}-v_{variant_tag}"
+        plan_path = out_dir / f"{tag}.plan"
+        write_plan_file(plan_path, result.actions)
+        if result.actions:
+            write_direction_plan(out_dir / f"{tag}.play.plan", result.actions)
+        write_text_file(stdout_path, result.raw_stdout)
+        write_text_file(stderr_path, result.raw_stderr)
+
+        return BenchRow(
+            domain=str(domain),
+            input_problem=str(input_problem),
+            compiled_problem=str(compiled_problem),
+            variant=variant,
+            planner=result.planner,
+            status=result.status,
+            actions=len(result.actions),
+            time_sec=elapsed,
+            returncode=returncode if isinstance(returncode, int) else None,
+            stdout_file=str(stdout_path),
+            stderr_file=str(stderr_path),
+        )
+    finally:
+        if tmpdir is not None:
+            tmpdir.cleanup()
 
 
 def main() -> int:
@@ -210,12 +342,22 @@ def main() -> int:
     ap.add_argument("--stream", action="store_true", help="Stream planner output live.")
     ap.add_argument("--problem-gen", type=Path, default=None, help="Override generator script used for .txt maps.")
     ap.add_argument("--output-csv", type=Path, default=None, help="CSV output path.")
+    ap.add_argument("--output-plot", type=Path, default=None, help="Runtime plot SVG output path.")
     ap.add_argument("--output-json", type=Path, default=None, help="Optional JSON output path.")
     ap.add_argument(
         "--results-dir",
         type=Path,
         default=None,
-        help="Directory for benchmark stdout/stderr files. Default: results/classic-bench/run_<timestamp>/",
+        help=(
+            "Run output directory. Defaults to tools/benchmarking/results/classic-bench_<timestamp>/ "
+            "(contains CSV, plot, plans/, and logs)."
+        ),
+    )
+    ap.add_argument(
+        "--jobs",
+        type=int,
+        default=(os.cpu_count() or 1),
+        help="Number of planner runs to execute in parallel (default: CPU cores).",
     )
     args = ap.parse_args()
 
@@ -249,104 +391,64 @@ def main() -> int:
         return 2
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_dir = (
+    run_dir = (
         args.results_dir.resolve()
         if args.results_dir
-        else (repo_root() / "results" / "classic-bench" / f"run_{stamp}")
+        else default_run_dir(stamp)
     )
-    results_dir.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    plans_dir = run_dir / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = args.output_csv.resolve() if args.output_csv else default_output_csv(run_dir)
+    plot_path = args.output_plot.resolve() if args.output_plot else default_output_plot(run_dir)
+
+    if args.jobs < 1:
+        print("[ERR] --jobs must be >= 1.", file=sys.stderr)
+        return 2
+
+    tasks = [
+        BenchTask(domain=domain, input_problem=input_problem, variant=variant)
+        for domain in domains
+        for input_problem in input_problems
+        for variant in variants
+    ]
+    total_runs = len(tasks)
+    workers = min(args.jobs, total_runs) if total_runs else 1
+    if args.stream and workers > 1:
+        print("[WARN] --stream with --jobs > 1 can interleave planner logs.")
 
     rows: List[BenchRow] = []
-    total_runs = len(domains) * len(input_problems) * len(variants)
-    run_idx = 0
-
-    for domain in domains:
-        for input_problem in input_problems:
-            compiled_problem = input_problem
-            tmpdir: Optional[tempfile.TemporaryDirectory] = None
+    print(f"[INFO] Runs: {total_runs} | workers: {workers}")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        future_to_task = {
+            ex.submit(
+                run_task,
+                task,
+                timeout=args.timeout,
+                stream=args.stream,
+                problem_gen=args.problem_gen,
+                run_dir=run_dir,
+                plans_dir=plans_dir,
+            ): task
+            for task in tasks
+        }
+        done = 0
+        for fut in concurrent.futures.as_completed(future_to_task):
+            done += 1
+            task = future_to_task[fut]
             try:
-                if input_problem.suffix.lower() == ".txt":
-                    compiled_problem, tmpdir = generate_problem_from_level(
-                        input_problem, domain=domain, explicit_gen=args.problem_gen
-                    )
+                row = fut.result()
+            except Exception as exc:
+                print(f"[{done}/{total_runs}] {task.domain.name} | {task.input_problem.name} | variant={task.variant} -> error ({exc})")
+                continue
+            rows.append(row)
+            print(
+                f"[{done}/{total_runs}] {task.domain.name} | {task.input_problem.name} | variant={task.variant} "
+                f"-> {row.status} | time={row.time_sec:.3f}s | actions={row.actions}"
+            )
 
-                for variant in variants:
-                    run_idx += 1
-                    print(f"[{run_idx}/{total_runs}] {domain.name} | {input_problem.name} | variant={variant}")
+    rows.sort(key=lambda r: (r.domain, r.input_problem, r.variant))
 
-                    domain_tag = safe_tag(domain.stem)
-                    problem_name = normalise_problem_name(compiled_problem)
-                    problem_tag = safe_tag(problem_name)
-                    variant_tag = safe_tag(variant)
-                    stdout_path = results_dir / (
-                        f"classic-bench-d_{domain_tag}-p_{problem_tag}-v_{variant_tag}.stdout.txt"
-                    )
-                    stderr_path = results_dir / (
-                        f"classic-bench-d_{domain_tag}-p_{problem_tag}-v_{variant_tag}.stderr.txt"
-                    )
-
-                    try:
-                        result = variant_to_run(
-                            variant=variant,
-                            domain=domain,
-                            problem=compiled_problem,
-                            timeout=args.timeout,
-                            stream=args.stream,
-                        )
-                    except Exception as exc:
-                        write_text_file(stdout_path, "")
-                        write_text_file(stderr_path, str(exc))
-                        rows.append(
-                            BenchRow(
-                                domain=str(domain),
-                                input_problem=str(input_problem),
-                                compiled_problem=str(compiled_problem),
-                                variant=variant,
-                                planner=variant,
-                                status="error",
-                                actions=0,
-                                time_sec=0.0,
-                                returncode=None,
-                                stdout_file=str(stdout_path),
-                                stderr_file=str(stderr_path),
-                            )
-                        )
-                        print(f"  -> error ({exc})")
-                        continue
-
-                    elapsed = float(result.metrics.get("time_sec", 0.0) or 0.0)
-                    returncode = result.metrics.get("returncode")
-
-                    out_dir = repo_root() / "plans" / problem_name
-                    tag = f"classic-bench-d_{domain_tag}-v_{variant_tag}"
-                    plan_path = out_dir / f"{tag}.plan"
-                    write_plan_file(plan_path, result.actions)
-                    if result.actions:
-                        write_direction_plan(out_dir / f"{tag}.play.plan", result.actions)
-                    write_text_file(stdout_path, result.raw_stdout)
-                    write_text_file(stderr_path, result.raw_stderr)
-
-                    rows.append(
-                        BenchRow(
-                            domain=str(domain),
-                            input_problem=str(input_problem),
-                            compiled_problem=str(compiled_problem),
-                            variant=variant,
-                            planner=result.planner,
-                            status=result.status,
-                            actions=len(result.actions),
-                            time_sec=elapsed,
-                            returncode=returncode if isinstance(returncode, int) else None,
-                            stdout_file=str(stdout_path),
-                            stderr_file=str(stderr_path),
-                        )
-                    )
-                    print(f"  -> {result.status} | time={elapsed:.3f}s | actions={len(result.actions)}")
-            finally:
-                if tmpdir is not None:
-                    tmpdir.cleanup()
-
-    csv_path = args.output_csv.resolve() if args.output_csv else default_output_csv()
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(
@@ -369,6 +471,8 @@ def main() -> int:
         for row in rows:
             writer.writerow(asdict(row))
 
+    plot_generated = generate_runtime_plot(csv_path=csv_path, out_path=plot_path, title="Classic Runtime Sweep")
+
     solved = [r for r in rows if r.status == "solved"]
     timeouts = [r for r in rows if r.status == "timeout"]
     errors = [r for r in rows if r.status == "error"]
@@ -377,8 +481,10 @@ def main() -> int:
     print(f"- solved: {len(solved)}")
     print(f"- timeout: {len(timeouts)}")
     print(f"- error: {len(errors)}")
+    print(f"- run_dir: {run_dir}")
+    print(f"- plans: {plans_dir}")
     print(f"- csv: {csv_path}")
-    print(f"- results: {results_dir}")
+    print(f"- plot: {plot_path if plot_generated else 'not generated'}")
 
     if args.output_json:
         json_path = args.output_json.resolve()
@@ -387,7 +493,7 @@ def main() -> int:
             "domains": [str(d) for d in domains],
             "variants": variants,
             "timeout_sec": args.timeout,
-            "results_dir": str(results_dir),
+            "results_dir": str(run_dir),
             "rows": [asdict(r) for r in rows],
         }
         json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

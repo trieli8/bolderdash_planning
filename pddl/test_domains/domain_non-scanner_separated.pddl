@@ -1,3 +1,6 @@
+; Generated test domain variant
+; variant: domain_non-scanner_separated.pddl
+; source: pddl/domain.pddl
 (define (domain mine-tick-gravity)
   (:requirements :strips :typing :negative-preconditions :disjunctive-preconditions :universal-preconditions :conditional-effects :action-costs)
 

@@ -24,7 +24,7 @@ class TimedAction:
 @dataclasses.dataclass
 class PlusPlanResult:
     planner: str
-    status: str  # solved | unsolved | timeout | error
+    status: str  # solved | no-path | unsolved | timeout | error
     actions: List[TimedAction]
     raw_stdout: str
     raw_stderr: str
@@ -290,7 +290,7 @@ def solve(
     elif actions:
         status = "solved"
     elif rc == 0 and any(token in lowered for token in ["unsat", "no plan", "unsolvable", "unsolvable problem"]):
-        status = "unsolved"
+        status = "no-path"
     elif rc == 0:
         status = "unsolved"
     else:
@@ -483,7 +483,7 @@ def main() -> int:
             except Exception as exc:
                 print(f"[WARN] Could not launch plan_player: {exc}", file=sys.stderr)
 
-    return 0 if res.status in ("solved", "unsolved") else 1
+    return 0 if res.status in ("solved", "no-path", "unsolved") else 1
 
 
 if __name__ == "__main__":

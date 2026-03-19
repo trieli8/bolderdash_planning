@@ -9,15 +9,20 @@ from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 
-def repo_root() -> Path:
+def benchmarking_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
 def find_latest_csv() -> Path:
-    bench_dir = repo_root() / "plans" / "plus-bench"
-    candidates = sorted(bench_dir.glob("*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+    results_root = benchmarking_root() / "results"
+    candidates: List[Path] = []
+    for pattern in ("*/plus_sweep.csv", "*/classic_sweep.csv", "*/*.csv"):
+        candidates.extend([p for p in results_root.glob(pattern) if p.is_file()])
+        if candidates:
+            break
+    candidates = sorted(set(candidates), key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
-        raise FileNotFoundError(f"No benchmark CSV found in {bench_dir}")
+        raise FileNotFoundError(f"No benchmark CSV found in {results_root}")
     return candidates[0]
 
 
@@ -100,7 +105,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="Plot runtime from ENHSP benchmark CSV as SVG (x=problem, y=runtime, fill=h, marker=s, outline=domain)."
     )
-    ap.add_argument("--csv", type=Path, default=None, help="Benchmark CSV path. Defaults to latest in plans/plus-bench.")
+    ap.add_argument(
+        "--csv",
+        type=Path,
+        default=None,
+        help="Benchmark CSV path. Defaults to latest CSV in tools/benchmarking/results/*/.",
+    )
     ap.add_argument("--out", type=Path, default=None, help="Output SVG path. Default: <csv>.runtime.svg")
     ap.add_argument("--title", default="ENHSP Runtime Sweep", help="Chart title.")
     ap.add_argument(

@@ -24,7 +24,7 @@ class PlanResult:
     planner: str
     domain: str
     problem: str
-    status: str  # solved | unsolved | timeout | error
+    status: str  # solved | no-path | unsolved | timeout | error
     actions: List[Tuple[str, List[str]]]
     raw_stdout: str
     raw_stderr: str
@@ -398,9 +398,20 @@ def solve_with_ff(domain: Path, problem: Path, timeout: int | None, stream: bool
                 actions.append((name, args))
                 continue
 
+    lowered = (out + "\n" + err).lower()
+    no_path_tokens = [
+        "unsolvable",
+        "no plan",
+        "goal can be simplified to false",
+        "problem proven unsolvable",
+        "problem is unsolvable",
+    ]
+
     status = "solved" if actions else ("unsolved" if rc == 0 else "error")
-    if "found legal plan" in out.lower():
+    if "found legal plan" in lowered:
         status = "solved"
+    elif rc == 0 and any(tok in lowered for tok in no_path_tokens):
+        status = "no-path"
 
     return PlanResult(
         planner="ff",
@@ -479,7 +490,27 @@ def solve_with_fd(
 
         plan_files = _find_fd_plan_files(td_path)
         actions = _parse_fd_plan_file(plan_files[-1]) if plan_files else []
-        status = "solved" if actions else ("unsolved" if rc == 0 else "error")
+        lowered = (out + "\n" + err).lower()
+        no_path_tokens = [
+            "unsolvable",
+            "no solution",
+            "task is unsolvable",
+            "problem is unsolvable",
+            "proved unsolvable",
+        ]
+
+        if actions:
+            status = "solved"
+        elif rc in (11, 12):
+            # FD uses non-zero search exit codes for "no solution" outcomes in
+            # some configurations; report these distinctly from timeout/error.
+            status = "no-path"
+        elif rc == 0 and any(tok in lowered for tok in no_path_tokens):
+            status = "no-path"
+        elif rc == 0:
+            status = "unsolved"
+        else:
+            status = "error"
 
         return PlanResult(
             planner=tag,
@@ -503,10 +534,37 @@ def solve_with_fd(
 # -----------------------------
 
 def select_problem_gen(domain: Path) -> Path:
-    domain_name = domain.name.lower()
+    root = repo_root()
+
+    def read_source_name(path: Path) -> Optional[str]:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+        m = re.search(r"^;\s*source:\s*(.+)$", text, flags=re.MULTILINE)
+        if not m:
+            return None
+        return Path(m.group(1).strip()).name
+
+    source_to_gen = {
+        "domain.pddl": "problem_gen.py",
+        "domain_merged.pddl": "problem_gen.py",
+        "domain_scanner_combined.pddl": "problem_gen.py",
+        "domain_scanner_separated.pddl": "problem_gen_scanner_separated.py",
+    }
+
+    source_name = read_source_name(domain)
+    if source_name:
+        mapped = source_to_gen.get(source_name)
+        if mapped:
+            return root / "pddl" / mapped
+        domain_name = source_name.lower()
+    else:
+        domain_name = domain.name.lower()
+
     if "scanner_separated" in domain_name or "scaner_separated" in domain_name:
-        return repo_root() / "pddl" / "problem_gen_scanner_separated.py"
-    return repo_root() / "pddl" / "problem_gen.py"
+        return root / "pddl" / "problem_gen_scanner_separated.py"
+    return root / "pddl" / "problem_gen.py"
 
 
 def generate_problem_from_level(

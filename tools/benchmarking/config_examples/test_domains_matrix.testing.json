@@ -1,0 +1,48 @@
+{
+  "timeout_sec": 200,
+  "max_parallel_runs": 6,
+  "random_seed": 1337,
+  "domains_glob": "pddl/test_domains/domain*.pddl",
+  "custom_fail_streak_limit": 3,
+  "growth_stop_on_failure": true,
+  "custom_levels": [
+    "pddl/level_5_5.txt"
+  ],
+  "growth": {
+    "enabled": false,
+    "start_size": 4,
+    "max_size": 20,
+    "size_step": 1,
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "random_repeats": {
+    "enabled": false,
+    "size": "5x5",
+    "repeats_per_size": 6,
+    "stone_counts": [1, 2, 4, 4, 8, 16],
+    "stone_count_mode": "cycle",
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "planner_settings": [
+
+    {
+      "name": "enhsp-blind-astar-opt",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-pe -dap -h blind -s astar",
+      "java_opts": "-Xmx8g"
+    },
+        {
+      "name": "lifted-gbfs-blind",
+      "family": "classic",
+      "planner": "lifted",
+      "lifted_search": "gbfs",
+      "lifted_evaluator": "blind",
+      "lifted_generator": "yannakakis"
+    }
+  ]
+}

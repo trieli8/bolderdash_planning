@@ -10,15 +10,18 @@ from pathlib import Path
 from typing import List, Optional
 
 
-def repo_root() -> Path:
+def benchmarking_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
 def find_latest_results_dir() -> Path:
-    base = repo_root() / "results" / "plus-bench"
-    runs = [p for p in base.glob("run_*") if p.is_dir()]
+    base = benchmarking_root() / "results"
+    runs = [p for p in base.glob("plus-bench_*") if p.is_dir()]
     if not runs:
-        raise FileNotFoundError(f"No run_* folders found under {base}")
+        # Backward compatibility for the older layout.
+        runs = [p for p in (base / "plus-bench").glob("run_*") if p.is_dir()]
+    if not runs:
+        raise FileNotFoundError(f"No plus benchmark run folders found under {base}")
     runs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return runs[0]
 
@@ -95,7 +98,7 @@ def main() -> int:
         "--results-dir",
         type=Path,
         default=None,
-        help="Directory containing plus benchmark *.stdout.txt files. Default: latest results/plus-bench/run_*/",
+        help="Directory containing plus benchmark *.stdout.txt files. Default: latest tools/benchmarking/results/plus-bench_*/",
     )
     ap.add_argument(
         "--pattern",

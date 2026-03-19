@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -14,9 +16,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
+TOOLS_DIR = Path(__file__).resolve().parents[1]
+BENCHMARK_DIR = Path(__file__).resolve().parent
+REPO_ROOT = TOOLS_DIR.parent
+PLOT_RUNTIME_SCRIPT = BENCHMARK_DIR / "ploters" / "plot_plus_bench_runtime.py"
+
 
 def repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return REPO_ROOT
 
 
 PLUS_RUNNER_DIR = repo_root() / "planners" / "pddl-plus"
@@ -191,9 +198,148 @@ class BenchRow:
     stderr_file: str
 
 
-def default_output_csv() -> Path:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return repo_root() / "plans" / "plus-bench" / f"enhsp_sweep_{stamp}.csv"
+@dataclass(frozen=True)
+class BenchTask:
+    domain: Path
+    input_problem: Path
+    heuristic: str
+    search: str
+
+
+def default_run_dir(stamp: str) -> Path:
+    return BENCHMARK_DIR / "results" / f"plus-bench_{stamp}"
+
+
+def default_output_csv(run_dir: Path) -> Path:
+    return run_dir / "plus_sweep.csv"
+
+
+def default_output_plot(run_dir: Path) -> Path:
+    return run_dir / "runtime.svg"
+
+
+def generate_runtime_plot(csv_path: Path, out_path: Path, title: str) -> bool:
+    if not PLOT_RUNTIME_SCRIPT.exists():
+        print(f"[WARN] Plot script not found, skipping plot: {PLOT_RUNTIME_SCRIPT}")
+        return False
+    cmd = [
+        sys.executable,
+        str(PLOT_RUNTIME_SCRIPT),
+        "--csv",
+        str(csv_path),
+        "--out",
+        str(out_path),
+        "--title",
+        title,
+        "--include-failures",
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        print(f"[WARN] Failed to generate plot: {detail}")
+        return False
+    return True
+
+
+def run_task(
+    task: BenchTask,
+    *,
+    timeout: int,
+    stream: bool,
+    base_args: str,
+    java_opts: str,
+    problem_gen: Optional[Path],
+    enhsp_jar: Optional[Path],
+    run_dir: Path,
+    plans_dir: Path,
+) -> BenchRow:
+    domain = task.domain
+    input_problem = task.input_problem
+    heuristic = task.heuristic
+    search = task.search
+    compiled_problem = input_problem
+    tmpdir: Optional[tempfile.TemporaryDirectory] = None
+
+    try:
+        if input_problem.suffix.lower() == ".txt":
+            compiled_problem, tmpdir = generate_problem_from_level(
+                level_txt=input_problem,
+                domain=domain,
+                explicit_gen=problem_gen,
+            )
+
+        planner_args_parts = []
+        if base_args.strip():
+            planner_args_parts.extend(shlex.split(base_args))
+        planner_args_parts.extend(["-h", heuristic, "-s", search])
+        planner_args = " ".join(shlex.quote(p) for p in planner_args_parts)
+
+        domain_tag = safe_tag(domain.stem)
+        problem_name = normalise_problem_name(compiled_problem)
+        problem_tag = safe_tag(problem_name)
+        unique = f"plus-enhsp-bench-d_{domain_tag}-h_{safe_tag(heuristic)}-s_{safe_tag(search)}"
+        stdout_path = run_dir / (
+            f"plus-enhsp-bench-d_{domain_tag}-p_{problem_tag}-h_{safe_tag(heuristic)}-s_{safe_tag(search)}.stdout.txt"
+        )
+        stderr_path = run_dir / (
+            f"plus-enhsp-bench-d_{domain_tag}-p_{problem_tag}-h_{safe_tag(heuristic)}-s_{safe_tag(search)}.stderr.txt"
+        )
+
+        try:
+            result: PlusPlanResult = solve_plus(
+                domain=domain,
+                problem=compiled_problem,
+                planner="enhsp",
+                timeout=timeout,
+                stream=stream,
+                planner_args=planner_args,
+                java_opts=java_opts,
+                enhsp_jar=enhsp_jar.resolve() if enhsp_jar else None,
+            )
+        except Exception as exc:
+            write_text_file(stdout_path, "")
+            write_text_file(stderr_path, str(exc))
+            return BenchRow(
+                domain=str(domain),
+                input_problem=str(input_problem),
+                compiled_problem=str(compiled_problem),
+                heuristic=heuristic,
+                search=search,
+                planner_args=planner_args,
+                status="error",
+                actions=0,
+                time_sec=0.0,
+                returncode=None,
+                stdout_file=str(stdout_path),
+                stderr_file=str(stderr_path),
+            )
+
+        elapsed = float(result.metrics.get("time_sec", 0.0) or 0.0)
+        returncode = result.metrics.get("returncode")
+
+        out_dir = plans_dir / problem_name
+        write_plan_file(out_dir / f"{unique}.plan", result.actions)
+        write_timed_plan_file(out_dir / f"{unique}.timed.plan", result.actions)
+        write_text_file(stdout_path, result.raw_stdout)
+        write_text_file(stderr_path, result.raw_stderr)
+
+        return BenchRow(
+            domain=str(domain),
+            input_problem=str(input_problem),
+            compiled_problem=str(compiled_problem),
+            heuristic=heuristic,
+            search=search,
+            planner_args=planner_args,
+            status=result.status,
+            actions=len(result.actions),
+            time_sec=elapsed,
+            returncode=returncode if isinstance(returncode, int) else None,
+            stdout_file=str(stdout_path),
+            stderr_file=str(stderr_path),
+        )
+    finally:
+        if tmpdir is not None:
+            tmpdir.cleanup()
 
 
 def main() -> int:
@@ -259,12 +405,22 @@ def main() -> int:
         help="Override generator script used for .txt maps.",
     )
     ap.add_argument("--output-csv", type=Path, default=None, help="CSV output path.")
+    ap.add_argument("--output-plot", type=Path, default=None, help="Runtime plot SVG output path.")
     ap.add_argument("--output-json", type=Path, default=None, help="Optional JSON output path.")
     ap.add_argument(
         "--results-dir",
         type=Path,
         default=None,
-        help="Directory for benchmark stdout/stderr files. Default: results/plus-bench/run_<timestamp>/",
+        help=(
+            "Run output directory. Defaults to tools/benchmarking/results/plus-bench_<timestamp>/ "
+            "(contains CSV, plot, plans/, and logs)."
+        ),
+    )
+    ap.add_argument(
+        "--jobs",
+        type=int,
+        default=(os.cpu_count() or 1),
+        help="Number of planner runs to execute in parallel (default: CPU cores).",
     )
     args = ap.parse_args()
 
@@ -296,121 +452,72 @@ def main() -> int:
         return 2
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_dir = (
+    run_dir = (
         args.results_dir.resolve()
         if args.results_dir
-        else (repo_root() / "results" / "plus-bench" / f"run_{stamp}")
+        else default_run_dir(stamp)
     )
-    results_dir.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    plans_dir = run_dir / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = args.output_csv.resolve() if args.output_csv else default_output_csv(run_dir)
+    plot_path = args.output_plot.resolve() if args.output_plot else default_output_plot(run_dir)
+
+    if args.jobs < 1:
+        print("[ERR] --jobs must be >= 1.", file=sys.stderr)
+        return 2
+
+    tasks = [
+        BenchTask(domain=domain, input_problem=input_problem, heuristic=heuristic, search=search)
+        for domain in domains
+        for input_problem in input_problems
+        for heuristic in heuristics
+        for search in searches
+    ]
+    total_runs = len(tasks)
+    workers = min(args.jobs, total_runs) if total_runs else 1
+    if args.stream and workers > 1:
+        print("[WARN] --stream with --jobs > 1 can interleave planner logs.")
 
     rows: List[BenchRow] = []
-    total_runs = len(domains) * len(input_problems) * len(heuristics) * len(searches)
-    run_idx = 0
-
-    for domain in domains:
-        for input_problem in input_problems:
-            compiled_problem = input_problem
-            tmpdir: Optional[tempfile.TemporaryDirectory] = None
+    print(f"[INFO] Runs: {total_runs} | workers: {workers}")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        future_to_task = {
+            ex.submit(
+                run_task,
+                task,
+                timeout=args.timeout,
+                stream=args.stream,
+                base_args=args.base_args,
+                java_opts=args.java_opts,
+                problem_gen=args.problem_gen,
+                enhsp_jar=args.enhsp_jar,
+                run_dir=run_dir,
+                plans_dir=plans_dir,
+            ): task
+            for task in tasks
+        }
+        done = 0
+        for fut in concurrent.futures.as_completed(future_to_task):
+            done += 1
+            task = future_to_task[fut]
             try:
-                if input_problem.suffix.lower() == ".txt":
-                    compiled_problem, tmpdir = generate_problem_from_level(
-                        level_txt=input_problem,
-                        domain=domain,
-                        explicit_gen=args.problem_gen,
-                    )
+                row = fut.result()
+            except Exception as exc:
+                print(
+                    f"[{done}/{total_runs}] {task.domain.name} | {task.input_problem.name} | "
+                    f"-h {task.heuristic} | -s {task.search} -> error ({exc})"
+                )
+                continue
+            rows.append(row)
+            print(
+                f"[{done}/{total_runs}] {task.domain.name} | {task.input_problem.name} | "
+                f"-h {task.heuristic} | -s {task.search} -> {row.status} | "
+                f"time={row.time_sec:.3f}s | actions={row.actions}"
+            )
 
-                for heuristic in heuristics:
-                    for search in searches:
-                        run_idx += 1
-                        planner_args_parts = []
-                        if args.base_args.strip():
-                            planner_args_parts.extend(shlex.split(args.base_args))
-                        planner_args_parts.extend(["-h", heuristic, "-s", search])
-                        planner_args = " ".join(shlex.quote(p) for p in planner_args_parts)
+    rows.sort(key=lambda r: (r.domain, r.input_problem, r.heuristic, r.search))
 
-                        print(
-                            f"[{run_idx}/{total_runs}] {domain.name} | {input_problem.name} | -h {heuristic} | -s {search}"
-                        )
-
-                        domain_tag = safe_tag(domain.stem)
-                        problem_name = normalise_problem_name(compiled_problem)
-                        problem_tag = safe_tag(problem_name)
-                        unique = (
-                            f"plus-enhsp-bench-d_{domain_tag}-h_{safe_tag(heuristic)}-s_{safe_tag(search)}"
-                        )
-                        stdout_path = results_dir / (
-                            f"plus-enhsp-bench-d_{domain_tag}-p_{problem_tag}-h_{safe_tag(heuristic)}-s_{safe_tag(search)}.stdout.txt"
-                        )
-                        stderr_path = results_dir / (
-                            f"plus-enhsp-bench-d_{domain_tag}-p_{problem_tag}-h_{safe_tag(heuristic)}-s_{safe_tag(search)}.stderr.txt"
-                        )
-
-                        try:
-                            result: PlusPlanResult = solve_plus(
-                                domain=domain,
-                                problem=compiled_problem,
-                                planner="enhsp",
-                                timeout=args.timeout,
-                                stream=args.stream,
-                                planner_args=planner_args,
-                                java_opts=args.java_opts,
-                                enhsp_jar=args.enhsp_jar.resolve() if args.enhsp_jar else None,
-                            )
-                        except Exception as exc:
-                            write_text_file(stdout_path, "")
-                            write_text_file(stderr_path, str(exc))
-                            rows.append(
-                                BenchRow(
-                                    domain=str(domain),
-                                    input_problem=str(input_problem),
-                                    compiled_problem=str(compiled_problem),
-                                    heuristic=heuristic,
-                                    search=search,
-                                    planner_args=planner_args,
-                                    status="error",
-                                    actions=0,
-                                    time_sec=0.0,
-                                    returncode=None,
-                                    stdout_file=str(stdout_path),
-                                    stderr_file=str(stderr_path),
-                                )
-                            )
-                            print(f"  -> error ({exc})")
-                            continue
-
-                        elapsed = float(result.metrics.get("time_sec", 0.0) or 0.0)
-                        returncode = result.metrics.get("returncode")
-
-                        out_dir = repo_root() / "plans" / problem_name
-                        write_plan_file(out_dir / f"{unique}.plan", result.actions)
-                        write_timed_plan_file(out_dir / f"{unique}.timed.plan", result.actions)
-                        write_text_file(stdout_path, result.raw_stdout)
-                        write_text_file(stderr_path, result.raw_stderr)
-
-                        rows.append(
-                            BenchRow(
-                                domain=str(domain),
-                                input_problem=str(input_problem),
-                                compiled_problem=str(compiled_problem),
-                                heuristic=heuristic,
-                                search=search,
-                                planner_args=planner_args,
-                                status=result.status,
-                                actions=len(result.actions),
-                                time_sec=elapsed,
-                                returncode=returncode if isinstance(returncode, int) else None,
-                                stdout_file=str(stdout_path),
-                                stderr_file=str(stderr_path),
-                            )
-                        )
-                        print(
-                            f"  -> {result.status} | time={elapsed:.3f}s | actions={len(result.actions)}"
-                        )
-            finally:
-                if tmpdir is not None:
-                    tmpdir.cleanup()
-
-    csv_path = (args.output_csv.resolve() if args.output_csv else default_output_csv())
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
     with csv_path.open("w", newline="", encoding="utf-8") as fh:
@@ -435,6 +542,8 @@ def main() -> int:
         for row in rows:
             writer.writerow(asdict(row))
 
+    plot_generated = generate_runtime_plot(csv_path=csv_path, out_path=plot_path, title="ENHSP Runtime Sweep")
+
     solved = [r for r in rows if r.status == "solved"]
     timeouts = [r for r in rows if r.status == "timeout"]
     errors = [r for r in rows if r.status == "error"]
@@ -443,8 +552,10 @@ def main() -> int:
     print(f"- solved: {len(solved)}")
     print(f"- timeout: {len(timeouts)}")
     print(f"- error: {len(errors)}")
+    print(f"- run_dir: {run_dir}")
+    print(f"- plans: {plans_dir}")
     print(f"- csv: {csv_path}")
-    print(f"- results: {results_dir}")
+    print(f"- plot: {plot_path if plot_generated else 'not generated'}")
 
     if args.output_json:
         json_path = args.output_json.resolve()
@@ -454,7 +565,7 @@ def main() -> int:
             "timeout_sec": args.timeout,
             "base_args": args.base_args,
             "java_opts": args.java_opts,
-            "results_dir": str(results_dir),
+            "results_dir": str(run_dir),
             "rows": [asdict(r) for r in rows],
         }
         json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

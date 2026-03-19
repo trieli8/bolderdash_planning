@@ -71,18 +71,29 @@ def play_plan(plan_file: Path, level_file: Optional[Path]) -> Tuple[int, str, st
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def run_cmd_capture(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, str]:
+def run_cmd_capture(
+    cmd: List[str],
+    cwd: Optional[Path] = None,
+    timeout_sec: Optional[int] = None,
+) -> Tuple[int, str, str]:
     proc = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        timeout=timeout_sec,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def run_cmd_stream(cmd: List[str], cwd: Optional[Path] = None, prefix: str = "") -> Tuple[int, str, str]:
+def run_cmd_stream(
+    cmd: List[str],
+    cwd: Optional[Path] = None,
+    timeout_sec: Optional[int] = None,
+    prefix: str = "",
+) -> Tuple[int, str, str]:
+    start = time.time()
     proc = subprocess.Popen(
         cmd,
         cwd=str(cwd) if cwd else None,
@@ -101,6 +112,9 @@ def run_cmd_stream(cmd: List[str], cwd: Optional[Path] = None, prefix: str = "")
         else:
             sys.stdout.write(line)
         sys.stdout.flush()
+        if timeout_sec is not None and (time.time() - start) > timeout_sec:
+            proc.kill()
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout_sec)
     rc = proc.wait()
     return rc, "".join(out_lines), ""
 
@@ -236,6 +250,7 @@ def solve_with_lifted(
     evaluator: str,
     generator: str,
     time_limit: Optional[int],
+    hard_timeout: Optional[int],
     seed: int,
     build: bool,
     debug: bool,
@@ -294,30 +309,69 @@ def solve_with_lifted(
         if planner_args.strip():
             cmd.extend(shlex.split(planner_args))
 
-        if stream:
-            rc, out, err = run_cmd_stream(cmd, cwd=td_path, prefix="[LIFTED] ")
-        else:
-            rc, out, err = run_cmd_capture(cmd, cwd=td_path)
+        try:
+            if stream:
+                rc, out, err = run_cmd_stream(
+                    cmd,
+                    cwd=td_path,
+                    timeout_sec=hard_timeout,
+                    prefix="[LIFTED] ",
+                )
+            else:
+                rc, out, err = run_cmd_capture(
+                    cmd,
+                    cwd=td_path,
+                    timeout_sec=hard_timeout,
+                )
+        except subprocess.TimeoutExpired as exc:
+            actions = parse_powerlifted_plan(raw_plan_path)
+            raw_plan_text = (
+                raw_plan_path.read_text(encoding="utf-8", errors="replace")
+                if raw_plan_path.exists()
+                else ""
+            )
+            out = (exc.output or "") if isinstance(exc.output, str) else ""
+            err = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
+            metrics = {
+                "returncode": None,
+                "time_sec": round(time.time() - start, 3),
+                "command": cmd,
+            }
+            return "timeout", actions, out, err, {"metrics": metrics, "raw_plan_text": raw_plan_text}
 
         actions = parse_powerlifted_plan(raw_plan_path)
         raw_plan_text = raw_plan_path.read_text(encoding="utf-8", errors="replace") if raw_plan_path.exists() else ""
 
-    lower_out = (out + "\n" + err).lower()
+    combined = out + "\n" + err
+    lower_out = combined.lower()
     solved = (
         rc == 0
         or "solution found" in lower_out
         or "goal found at:" in lower_out
         or "plan length:" in lower_out
     )
-    timed_out = rc == 23 or "ran out of time" in lower_out or (
-        rc == 255 and ("time" in lower_out and ("out" in lower_out or "limit" in lower_out))
+    timed_out = rc == 23 or bool(
+        re.search(r"\b(ran out of time|timed out|time limit(?: reached)?|reached time limit)\b", lower_out)
     )
+    no_path = bool(
+        re.search(r"\b(unsolvable|no solution|no plan)\b", lower_out)
+    )
+    hard_error = bool(
+        re.search(
+            r"(?im)^(error|aborting|traceback|exception|keyboardinterrupt)\b",
+            combined,
+        )
+    ) or "segmentation fault" in lower_out
 
     if solved:
         status = "solved"
+    elif hard_error:
+        status = "error"
     elif timed_out:
         status = "timeout"
-    elif rc in (11, 12, 22, 23, 255):
+    elif no_path:
+        status = "no-path"
+    elif rc in (11, 12, 22, 255):
         status = "unsolved"
     else:
         status = "error"
@@ -325,6 +379,7 @@ def solve_with_lifted(
     metrics = {
         "returncode": rc,
         "time_sec": round(time.time() - start, 3),
+        "command": cmd,
     }
     return status, actions, out, err, {"metrics": metrics, "raw_plan_text": raw_plan_text}
 
@@ -407,6 +462,7 @@ def main() -> int:
             evaluator=args.evaluator,
             generator=args.generator,
             time_limit=args.time_limit,
+            hard_timeout=args.time_limit,
             seed=args.seed,
             build=args.build,
             debug=args.debug,
@@ -457,7 +513,7 @@ def main() -> int:
     if temp_problem_dir is not None:
         temp_problem_dir.cleanup()
 
-    return 0 if status in ("solved", "unsolved", "timeout") else 1
+    return 0 if status in ("solved", "no-path", "unsolved", "timeout") else 1
 
 
 if __name__ == "__main__":

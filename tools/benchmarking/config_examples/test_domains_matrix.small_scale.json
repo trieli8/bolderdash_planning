@@ -1,0 +1,47 @@
+{
+  "timeout_sec": 120,
+  "max_parallel_runs": 6,
+  "random_seed": 1337,
+  "domains_glob": "pddl/test_domains/domain*.pddl",
+  "custom_fail_streak_limit": 3,
+  "growth_stop_on_failure": true,
+  "custom_levels": [
+    "pddl/level_5_5.txt",
+    "pddl/level_5_5_low_branch.txt",
+    "pddl/level_5_5_high_branch.txt",
+    "pddl/level_5_5_high_stone.txt",
+    "pddl/level_10_5.txt",
+    "pddl/level_10_10.txt",
+    "pddl/level_10_10_long.txt",
+    "pddl/level_reduce.txt"
+  ],
+  "growth": {
+    "enabled": true,
+    "start_size": 4,
+    "max_size": 20,
+    "size_step": 1,
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "random_repeats": {
+    "enabled": false,
+    "sizes": ["8x8"],
+    "repeats_per_size": 5,
+    "stone_counts": [1, 2, 4],
+    "stone_count_mode": "cycle",
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "planner_settings": [
+    {
+      "name": "lifted-gbfs-blind",
+      "family": "classic",
+      "planner": "lifted",
+      "lifted_search": "gbfs",
+      "lifted_evaluator": "blind",
+      "lifted_generator": "yannakakis"
+    }
+  ]
+}

@@ -136,8 +136,53 @@ def write_text_file(path: Path, text: str) -> None:
 
 
 def select_problem_gen(domain: Path) -> Path:
-    name = domain.name.lower()
     root = repo_root()
+
+    def read_source_name(path: Path) -> Optional[str]:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+        m = re.search(r"^;\s*source:\s*(.+)$", text, flags=re.MULTILINE)
+        if not m:
+            return None
+        return Path(m.group(1).strip()).name
+
+    source_to_gen = {
+        "domain.pddl": "problem_gen.py",
+        "domain_merged.pddl": "problem_gen.py",
+        "domain_scanner_combined.pddl": "problem_gen.py",
+        "domain_scanner_separated.pddl": "problem_gen_scanner_separated.py",
+        "domain_plus_from_domain.pddl": "problem_gen_plus_from_domain.py",
+        "domain_plus_from_domain_int_state.pddl": "problem_gen_plus_from_domain_int_state.py",
+        "domain_plus_scanner_separated.pddl": "problem_gen_plus_scanner_separated.py",
+        "domain_plus_scanner_separated_int_state.pddl": "problem_gen_plus_scanner_separated_int_state.py",
+        "domain_plus_scanner_separated_events.pddl": "problem_gen_plus_scanner_separated.py",
+        "domain_plus_scanner_separated_events_fluents.pddl": "problem_gen_plus_scanner_separated_events_fluents.py",
+        "domain_plus_scanner_separated_events_fluents_trimmed.pddl": "problem_gen_plus_scanner_separated_events_fluents_trimmed.py",
+        "domain_plus_relaxed.pddl": "problem_gen_plus_relaxed.py",
+    }
+
+    source_name = read_source_name(domain)
+    if source_name:
+        mapped = source_to_gen.get(source_name)
+        if mapped:
+            return root / "pddl" / mapped
+        name = source_name.lower()
+    else:
+        name = domain.name.lower()
+
+    if ("scanner_separated" in name) and ("int_state" in name or "int-state" in name):
+        return root / "pddl" / "problem_gen_plus_scanner_separated_int_state.py"
+
+    if "int_state" in name or "int-state" in name:
+        return root / "pddl" / "problem_gen_plus_from_domain_int_state.py"
+
+    if "scanner_separated_events_fluents_trimmed" in name:
+        return root / "pddl" / "problem_gen_plus_scanner_separated_events_fluents_trimmed.py"
+
+    if "scanner_separated_events_fluents" in name:
+        return root / "pddl" / "problem_gen_plus_scanner_separated_events_fluents.py"
 
     if "plus" in name and ("plus_scanner" in name or "scanner_separated" in name):
         return root / "pddl" / "problem_gen_plus_scanner_separated.py"

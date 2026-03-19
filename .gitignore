@@ -1,5 +1,6 @@
 # Ignore generated/temporary plan outputs
 plans/
+results/
 
 # Python bytecode/cache
 __pycache__/
