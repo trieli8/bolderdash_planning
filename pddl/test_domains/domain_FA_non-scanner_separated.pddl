@@ -179,7 +179,7 @@
   ;; AGENT DEATH
   ;; =====================================================
 
-  (:action __forced__physics_fall_on_agent
+  (:action __FORCED__physics_fall_on_agent
       :parameters (?c ?down - real-cell)
       :precondition (and 
         (update-required)
@@ -209,7 +209,7 @@
   ;; PHYSICS: ONE-TICK CELL UPDATE (PARALLEL)
   ;; ======================================================
 
-  (:action __forced__physics_stone_fall
+  (:action __FORCED__physics_stone_fall
     :parameters (?c ?down - real-cell)
     :precondition (and
       (update-required)
@@ -241,7 +241,7 @@
     )
   )
 
-  (:action __forced__physics_gem_fall
+  (:action __FORCED__physics_gem_fall
     :parameters (?c ?down - real-cell)
     :precondition (and
       (update-required)
@@ -270,7 +270,7 @@
     )
   )
 
-  (:action __forced__physics_stone_on_dirt
+  (:action __FORCED__physics_stone_on_dirt
     :parameters (?c ?down - real-cell)
     :precondition (and
       (update-required)
@@ -288,7 +288,7 @@
     )
   )
 
-  (:action __forced__physics_gem_on_dirt
+  (:action __FORCED__physics_gem_on_dirt
     :parameters (?c ?down - real-cell)
     :precondition (and
       (update-required)
@@ -307,7 +307,7 @@
     )
   )
 
-  (:action __forced__physics_on_bottom
+  (:action __FORCED__physics_on_bottom
     :parameters (?c - real-cell ?down - border-cell)
     :precondition (and
       (update-required)
@@ -328,7 +328,7 @@
   ;; ROLLING
   ; ------------------------------------------------------
 
-  (:action __forced__physics_stone_roll_left
+  (:action __FORCED__physics_stone_roll_left
     :parameters (?c - real-cell ?left ?down_left ?down ?up_left ?danger_cell - cell)
 
     :precondition (and
@@ -379,7 +379,7 @@
     )
   )
 
-  (:action __forced__physics_gem_roll_left
+  (:action __FORCED__physics_gem_roll_left
     :parameters (?c - real-cell ?left ?down_left ?down ?up_left ?danger_cell - cell)
 
     :precondition (and
@@ -430,7 +430,7 @@
     )
   )
 
-  (:action __forced__physics_stone_roll_right
+  (:action __FORCED__physics_stone_roll_right
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right ?left_danger - cell)
 
     :precondition (and
@@ -493,7 +493,7 @@
     )
   )
 
-  (:action __forced__physics_gem_roll_right
+  (:action __FORCED__physics_gem_roll_right
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right ?left_danger - cell)
 
     :precondition (and
@@ -558,7 +558,7 @@
     )
   )
 
-  (:action __forced__physics_on_agent
+  (:action __FORCED__physics_on_agent
       :parameters (?c ?down - real-cell)
       :precondition (and 
         (update-required)
@@ -578,7 +578,7 @@
       )
   )
 
-  (:action __forced__physics_stone_noop
+  (:action __FORCED__physics_stone_noop
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right ?left_danger - cell)
     :precondition (and
       (update-required)
@@ -646,7 +646,7 @@
     )
   )
 
-  (:action __forced__physics_on_falling_noop
+  (:action __FORCED__physics_on_falling_noop
     :parameters (?c - real-cell ?down - cell)
     :precondition (and
       (update-required)
@@ -668,7 +668,7 @@
     )
   )
 
-  (:action __forced__physics_gem_noop
+  (:action __FORCED__physics_gem_noop
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right ?left_danger - cell)
     :precondition (and
       (update-required)
@@ -728,7 +728,7 @@
     )
   )
 
-  (:action __forced__physics_agent_noop
+  (:action __FORCED__physics_agent_noop
     :parameters (?c - real-cell)
     :precondition (and
       (update-required)
@@ -744,7 +744,7 @@
 
   ;; -------- End-of-tick: at last cell, updated, flip parity --------
 
-  (:action __forced__end_tick
+  (:action __FORCED__end_tick
     :parameters ()
     :precondition (and
       (update-required)

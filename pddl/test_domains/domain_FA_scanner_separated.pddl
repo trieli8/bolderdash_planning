@@ -197,7 +197,7 @@
   ;; ======================================================
   ;; SCANNER MOVEMENT
   ;; ======================================================
-    (:action __forced__start_tick
+    (:action __FORCED__start_tick
         :parameters (?start - real-cell)
         :precondition (and
             (agent-alive)
@@ -219,7 +219,7 @@
         )
     )
     
-    (:action __forced__advance_scan_no_update
+    (:action __FORCED__advance_scan_no_update
         :parameters (?c - real-cell ?next - cell)
         :precondition (and
             (scan-required)
@@ -243,7 +243,7 @@
         )
     )
 
-    (:action __forced__advance_scan
+    (:action __FORCED__advance_scan
         :parameters (?c - real-cell ?next - cell)
         :precondition (and
             (scan-required)
@@ -268,7 +268,7 @@
         )
     )
 
-    (:action __forced__end_tick
+    (:action __FORCED__end_tick
         :parameters (?c - border-cell)
         :precondition (and
             (scan-required)
@@ -294,7 +294,7 @@
   ;; ======================================================
   ;; SCANNER CHECKS
   ;; ======================================================
-    (:action __forced__can_fall
+    (:action __FORCED__can_fall
         :parameters (?c - real-cell ?down - cell)
         :precondition (and
             (scan-required)
@@ -314,7 +314,7 @@
         )
     )
 
-    (:action __forced__not_fall
+    (:action __FORCED__not_fall
         :parameters (?c - real-cell ?down - cell)
         :precondition (and
             (scan-required)
@@ -334,7 +334,7 @@
         )
     )
 
-    (:action __forced__can_roll_left
+    (:action __FORCED__can_roll_left
         :parameters (?c - real-cell ?left ?down_left ?down ?up_left - cell)
         :precondition (and
             (scan-required)
@@ -362,7 +362,7 @@
         )
     )
 
-    (:action __forced__not_roll_left
+    (:action __FORCED__not_roll_left
         :parameters (?c - real-cell ?left ?down_left ?down ?up_left - cell)
         :precondition (and
             (scan-required)
@@ -396,7 +396,7 @@
         )
     )
 
-    (:action __forced__can_roll_right
+    (:action __FORCED__can_roll_right
         :parameters (?c - real-cell ?right ?down_right ?down ?up_right - cell)
         :precondition (and
             (scan-required)
@@ -424,7 +424,7 @@
         )
     )
 
-    (:action __forced__not_roll_right
+    (:action __FORCED__not_roll_right
         :parameters (?c - real-cell ?right ?down_right ?down ?up_right - cell)
         :precondition (and
             (scan-required)
@@ -461,7 +461,7 @@
   ;; ======================================================
   ;; STONE/GEM MOVEMENT
   ;; ======================================================
-    (:action __forced__stone_fall
+    (:action __FORCED__stone_fall
         :parameters (?c ?down - real-cell)
         :precondition (and
             (ready_to_move)
@@ -488,7 +488,7 @@
         )
     )
 
-    (:action __forced__gem_fall
+    (:action __FORCED__gem_fall
         :parameters (?c ?down - real-cell)
         :precondition (and
             (ready_to_move)
@@ -515,7 +515,7 @@
         )
     )
 
-    (:action __forced__stone_roll_left
+    (:action __FORCED__stone_roll_left
         :parameters (?c ?left - real-cell )
 
         :precondition (and
@@ -545,7 +545,7 @@
         )
     )
     
-    (:action __forced__gem_roll_left
+    (:action __FORCED__gem_roll_left
         :parameters (?c ?left - real-cell )
 
         :precondition (and
@@ -576,7 +576,7 @@
     )
 
 
-    (:action __forced__stone_roll_right
+    (:action __FORCED__stone_roll_right
         :parameters (?c ?right - real-cell )
 
         :precondition (and
@@ -608,7 +608,7 @@
         )
     )
     
-    (:action __forced__gem_roll_right
+    (:action __FORCED__gem_roll_right
         :parameters (?c ?right - real-cell )
 
         :precondition (and
@@ -639,7 +639,7 @@
         )
     )
 
-    (:action __forced__stone_gem_noop
+    (:action __FORCED__stone_gem_noop
         :parameters (?c - real-cell )
 
         :precondition (and

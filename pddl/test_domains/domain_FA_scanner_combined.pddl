@@ -197,7 +197,7 @@
   ;; AGENT DEATH
   ;; ======================================================
 
-  (:action __forced__physics_fall_on_agent
+  (:action __FORCED__physics_fall_on_agent
     :parameters (?c ?down ?next - real-cell)
     :precondition (and
       (scan-required)
@@ -231,7 +231,7 @@
   ;; FORCED ACTIONS: ONE-TICK CELL UPDATE IN SCAN ORDER
   ;; ======================================================
 
-  (:action __forced__physics_stone_fall
+  (:action __FORCED__physics_stone_fall
     :parameters (?c ?down ?next - real-cell)
     :precondition (and
       (scan-required)
@@ -266,7 +266,7 @@
     )
   )
 
-  (:action __forced__physics_gem_fall
+  (:action __FORCED__physics_gem_fall
     :parameters (?c ?down ?next - real-cell)
     :precondition (and
       (scan-required)
@@ -301,7 +301,7 @@
     )
   )
 
-  (:action __forced__physics_stone_on_dirt
+  (:action __FORCED__physics_stone_on_dirt
     :parameters (?c ?down ?next - real-cell)
     :precondition (and
       (scan-required)
@@ -325,7 +325,7 @@
     )
   )
 
-  (:action __forced__physics_gem_on_dirt
+  (:action __FORCED__physics_gem_on_dirt
     :parameters (?c ?down ?next - real-cell)
     :precondition (and
       (scan-required)
@@ -349,7 +349,7 @@
     )
   )
 
-  (:action __forced__physics_on_bottom
+  (:action __FORCED__physics_on_bottom
     :parameters (?c ?next - real-cell ?down - border-cell)
     :precondition (and
       (scan-required)
@@ -376,7 +376,7 @@
   ;; ROLLING
   ;; ------------------------------------------------------
 
-  (:action __forced__physics_stone_roll_left
+  (:action __FORCED__physics_stone_roll_left
     :parameters (?c ?next - real-cell ?left ?down_left ?down ?up_left)
     :precondition (and
       (scan-required)
@@ -428,7 +428,7 @@
     )
   )
 
-  (:action __forced__physics_gem_roll_left
+  (:action __FORCED__physics_gem_roll_left
     :parameters (?c ?next - real-cell ?left ?down_left ?down ?up_left)
     :precondition (and
       (scan-required)
@@ -480,7 +480,7 @@
     )
   )
 
-  (:action __forced__physics_stone_roll_right
+  (:action __FORCED__physics_stone_roll_right
     :parameters (?c ?next - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right)
     :precondition (and
       (scan-required)
@@ -544,7 +544,7 @@
     )
   )
 
-  (:action __forced__physics_gem_roll_right
+  (:action __FORCED__physics_gem_roll_right
     :parameters (?c ?next - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right)
     :precondition (and
       (scan-required)
@@ -611,7 +611,7 @@
   ;; Grounding-friendly fallbacks for roll/noop behavior.
   ;; These keep left-priority rolling without depending on updated-neighbor checks.
 
-  (:action __forced__physics_stone_roll_left_simple
+  (:action __FORCED__physics_stone_roll_left_simple
     :parameters (?c ?next ?left ?down_left ?down - real-cell)
     :precondition (and
       (scan-required)
@@ -650,7 +650,7 @@
     )
   )
 
-  (:action __forced__physics_gem_roll_left_simple
+  (:action __FORCED__physics_gem_roll_left_simple
     :parameters (?c ?next ?left ?down_left ?down - real-cell)
     :precondition (and
       (scan-required)
@@ -689,7 +689,7 @@
     )
   )
 
-  (:action __forced__physics_stone_roll_right_simple
+  (:action __FORCED__physics_stone_roll_right_simple
     :parameters (?c ?next ?left ?right ?down_left ?down ?down_right - real-cell)
     :precondition (and
       (scan-required)
@@ -736,7 +736,7 @@
     )
   )
 
-  (:action __forced__physics_gem_roll_right_simple
+  (:action __FORCED__physics_gem_roll_right_simple
     :parameters (?c ?next ?left ?right ?down_left ?down ?down_right - real-cell)
     :precondition (and
       (scan-required)
@@ -783,7 +783,7 @@
     )
   )
 
-  (:action __forced__physics_stone_noop_simple
+  (:action __FORCED__physics_stone_noop_simple
     :parameters (?c ?next ?left ?right ?down_left ?down ?down_right - real-cell)
     :precondition (and
       (scan-required)
@@ -826,7 +826,7 @@
     )
   )
 
-  (:action __forced__physics_gem_noop_simple
+  (:action __FORCED__physics_gem_noop_simple
     :parameters (?c ?next ?left ?right ?down_left ?down ?down_right - real-cell)
     :precondition (and
       (scan-required)
@@ -869,7 +869,7 @@
     )
   )
 
-  (:action __forced__physics_stone_noop
+  (:action __FORCED__physics_stone_noop
     :parameters (?c ?next - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right)
     :precondition (and
       (scan-required)
@@ -931,7 +931,7 @@
     )
   )
 
-  (:action __forced__physics_on_falling_noop
+  (:action __FORCED__physics_on_falling_noop
     :parameters (?c ?next - real-cell ?down - cell)
     :precondition (and
       (scan-required)
@@ -958,7 +958,7 @@
     )
   )
 
-  (:action __forced__physics_gem_noop
+  (:action __FORCED__physics_gem_noop
     :parameters (?c ?next - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right)
     :precondition (and
       (scan-required)
@@ -1020,7 +1020,7 @@
     )
   )
 
-  (:action __forced__physics_agent_noop
+  (:action __FORCED__physics_agent_noop
     :parameters (?c ?next - real-cell)
     :precondition (and
       (scan-required)
@@ -1041,7 +1041,7 @@
     )
   )
 
-  (:action __forced__physics_other_noop
+  (:action __FORCED__physics_other_noop
     :parameters (?c ?next - real-cell)
     :precondition (and
       (scan-required)
@@ -1063,7 +1063,7 @@
 
   ;; -------- Skip already-updated cells --------
 
-  (:action __forced__advance_scan
+  (:action __FORCED__advance_scan
     :parameters (?c ?next - real-cell)
     :precondition (and
       (scan-required)
@@ -1079,7 +1079,7 @@
 
   ;; -------- End-of-tick: at last cell, updated, clear flags --------
 
-  (:action __forced__end_tick
+  (:action __FORCED__end_tick
     :parameters (?c - real-cell)
     :precondition (and
       (scan-required)

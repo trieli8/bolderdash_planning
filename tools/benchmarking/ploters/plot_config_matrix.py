@@ -108,6 +108,7 @@ def load_rows(csv_path: Path) -> List[Dict[str, str]]:
 
 def annotate_row(row: Dict[str, str]) -> None:
     row["_setting"] = row.get("planner_setting", "") or "unknown"
+    row["_family"] = (row.get("planner_family", "") or "").strip().lower() or "unknown"
     row["_domain"] = Path(row.get("domain", "")).stem or "unknown"
     row["_map"] = Path(row.get("level", "")).stem or "unknown"
     row["_status"] = (row.get("status", "") or "").strip().lower()
@@ -131,6 +132,16 @@ def svg_finish(lines: List[str], out_path: Path) -> None:
     lines.append("</svg>")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_no_data_plot(out_path: Path, title: str, subtitle: str, message: str = "No data for this section.") -> None:
+    width = 980
+    height = 260
+    lines = svg_start(width, height, title, subtitle)
+    lines.append(
+        f'<text x="24" y="120" font-size="16" font-family="Arial, sans-serif" fill="#444">{html.escape(message)}</text>'
+    )
+    svg_finish(lines, out_path)
 
 
 def draw_legend(
@@ -161,8 +172,122 @@ def draw_legend(
         cy += 16
 
 
+def family_label(family: str) -> str:
+    fam = (family or "").strip().lower()
+    if fam == "fa":
+        return "FA"
+    if fam == "plus":
+        return "PDDL+"
+    if fam == "classic":
+        return "Classic"
+    return fam or "Unknown"
+
+
+def draw_family_shape_legend(
+    lines: List[str],
+    *,
+    families: Sequence[str],
+    x: float,
+    y: float,
+) -> None:
+    if not families:
+        return
+    lines.append(
+        f'<text x="{x:.1f}" y="{y:.1f}" font-size="13" font-family="Arial, sans-serif" fill="#111">Family (dot shape)</text>'
+    )
+    cy = y + 18
+    for fam in families:
+        draw_point_marker(
+            lines,
+            x=x + 7,
+            y=cy - 4,
+            marker=marker_for_family(fam),
+            size=5.0,
+            fill="#666",
+            stroke="#111",
+            stroke_width=0.9,
+        )
+        lines.append(
+            f'<text x="{x+18:.1f}" y="{cy:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">{html.escape(family_label(fam))}</text>'
+        )
+        cy += 16
+
+
+def family_by_setting(rows: Sequence[Dict[str, str]]) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    for r in rows:
+        setting = r.get("_setting", "") or "unknown"
+        family = (r.get("_family", "") or "unknown").strip().lower() or "unknown"
+        if setting not in mapping:
+            mapping[setting] = family
+    return mapping
+
+
 def is_attempt_status(status: str) -> bool:
     return status not in {"dry-run", "skipped_after_timeout", ""}
+
+
+def include_line_scatter_point(status: str) -> bool:
+    s = (status or "").strip().lower()
+    return s not in {"timeout", "error"}
+
+
+def marker_for_family(family: str) -> str:
+    fam = (family or "").strip().lower()
+    if fam == "classic":
+        return "circle"
+    if fam == "fa":
+        return "square"
+    if fam == "plus":
+        return "diamond"
+    return "triangle"
+
+
+def draw_point_marker(
+    lines: List[str],
+    *,
+    x: float,
+    y: float,
+    marker: str,
+    size: float,
+    fill: str,
+    stroke: str = "#111",
+    stroke_width: float = 0.8,
+    fill_opacity: Optional[float] = None,
+) -> None:
+    style = f'fill="{fill}" stroke="{stroke}" stroke-width="{stroke_width:.2f}"'
+    if fill_opacity is not None:
+        style += f' fill-opacity="{fill_opacity:.3f}"'
+    if marker == "square":
+        lines.append(
+            f'<rect x="{x-size:.1f}" y="{y-size:.1f}" width="{2*size:.1f}" height="{2*size:.1f}" {style}/>'
+        )
+        return
+    if marker == "diamond":
+        points = [
+            (x, y - size),
+            (x + size, y),
+            (x, y + size),
+            (x - size, y),
+        ]
+        lines.append(
+            f'<polygon points="{" ".join(f"{px:.1f},{py:.1f}" for px, py in points)}" {style}/>'
+        )
+        return
+    if marker == "triangle":
+        h = size * 1.15
+        points = [
+            (x, y - h),
+            (x + size, y + size * 0.8),
+            (x - size, y + size * 0.8),
+        ]
+        lines.append(
+            f'<polygon points="{" ".join(f"{px:.1f},{py:.1f}" for px, py in points)}" {style}/>'
+        )
+        return
+    lines.append(
+        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{size:.1f}" {style}/>'
+    )
 
 
 def lerp_channel(a: int, b: int, t: float) -> int:
@@ -731,9 +856,12 @@ def plot_runtime_cdf(rows: Sequence[Dict[str, str]], out_path: Path, subtitle: s
 
 def plot_runtime_vs_cells(rows: Sequence[Dict[str, str]], out_path: Path, subtitle: str) -> None:
     settings = sorted(set(r["_setting"] for r in rows))
+    setting_family = family_by_setting(rows)
     grouped: Dict[str, Dict[int, List[float]]] = {s: defaultdict(list) for s in settings}
     all_cells = set()
     for r in rows:
+        if not include_line_scatter_point(r["_status"]):
+            continue
         cells = safe_int(r.get("cells", ""))
         rt = safe_float(r.get("measured_total_sec", ""))
         if cells is None or rt is None or rt < 0:
@@ -801,9 +929,17 @@ def plot_runtime_vs_cells(rows: Sequence[Dict[str, str]], out_path: Path, subtit
             lines.append(
                 f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in points)}" fill="none" stroke="{colors[s]}" stroke-width="1.8"/>'
             )
+        marker = marker_for_family(setting_family.get(s, "unknown"))
         for x, y in points:
-            lines.append(
-                f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.1" fill="{colors[s]}" stroke="#111" stroke-width="0.7"/>'
+            draw_point_marker(
+                lines,
+                x=x,
+                y=y,
+                marker=marker,
+                size=3.2,
+                fill=colors[s],
+                stroke="#111",
+                stroke_width=0.7,
             )
     draw_legend(
         lines,
@@ -811,7 +947,122 @@ def plot_runtime_vs_cells(rows: Sequence[Dict[str, str]], out_path: Path, subtit
         x=left + cw + 18,
         y=top + 8,
         title="Setting",
-        marker="circle",
+        marker="rect",
+    )
+    families_present = sorted(set(setting_family.get(s, "unknown") for s in settings))
+    draw_family_shape_legend(
+        lines,
+        families=families_present,
+        x=left + cw + 18,
+        y=top + 8 + 18 + 16 * len(settings) + 10,
+    )
+    svg_finish(lines, out_path)
+
+
+def plot_action_literals_vs_cells(rows: Sequence[Dict[str, str]], out_path: Path, subtitle: str) -> None:
+    grouped_actions: Dict[int, List[float]] = defaultdict(list)
+    grouped_literals: Dict[int, List[float]] = defaultdict(list)
+    all_cells: set[int] = set()
+
+    for r in rows:
+        cells = safe_int(r.get("cells", ""))
+        if cells is None or cells <= 0:
+            continue
+        action_count = safe_float(r.get("action_set_size", ""))
+        literal_count = safe_float(r.get("facts_count", ""))
+        if action_count is not None and action_count >= 0:
+            grouped_actions[cells].append(action_count)
+            all_cells.add(cells)
+        if literal_count is not None and literal_count >= 0:
+            grouped_literals[cells].append(literal_count)
+            all_cells.add(cells)
+
+    cells_sorted = sorted(all_cells)
+    action_medians = {c: percentile(sorted(v), 0.5) for c, v in grouped_actions.items() if v}
+    literal_medians = {c: percentile(sorted(v), 0.5) for c, v in grouped_literals.items() if v}
+    if not cells_sorted or (not action_medians and not literal_medians):
+        return
+
+    y_values = list(action_medians.values()) + list(literal_medians.values())
+    y_max = nice_max(max(y_values) * 1.2 if y_values and max(y_values) > 0 else 1.0)
+    x_min, x_max = min(cells_sorted), max(cells_sorted)
+
+    width = 1080
+    height = 560
+    left = 90
+    top = 92
+    right = 250
+    bottom = 90
+    cw = width - left - right
+    ch = height - top - bottom
+
+    lines = svg_start(width, height, "Action Set / Literal Count vs Map Size", subtitle)
+    for i in range(6):
+        frac = i / 5.0
+        y = top + ch - frac * ch
+        val = frac * y_max
+        lines.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left+cw}" y2="{y:.1f}" stroke="#ececec"/>')
+        lines.append(
+            f'<text x="{left-10}" y="{y+4:.1f}" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#444">{val:.0f}</text>'
+        )
+
+    for c in cells_sorted:
+        x = lin_map(c, x_min, x_max, left, left + cw)
+        lines.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{top+ch}" stroke="#f5f5f5"/>')
+        lines.append(
+            f'<text x="{x:.1f}" y="{top+ch+18:.1f}" text-anchor="middle" font-size="10" font-family="Arial, sans-serif" fill="#444">{c}</text>'
+        )
+
+    lines.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(f'<line x1="{left}" y1="{top+ch}" x2="{left+cw}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(
+        f'<text x="{left+cw/2:.1f}" y="{top+ch+40:.1f}" text-anchor="middle" font-size="12" font-family="Arial, sans-serif" fill="#111">Cells (rows × cols)</text>'
+    )
+    lines.append(
+        f'<text x="{left-62}" y="{top+ch/2:.1f}" transform="rotate(-90 {left-62} {top+ch/2:.1f})" '
+        f'font-size="12" font-family="Arial, sans-serif" fill="#111">Count (median)</text>'
+    )
+
+    series: List[Tuple[str, Dict[int, float], str, str]] = [
+        ("Action set size", action_medians, "#1f77b4", "circle"),
+        ("Literal count", literal_medians, "#d62728", "square"),
+    ]
+    legend_items: List[Tuple[str, str]] = []
+    for label, values, color, marker in series:
+        if not values:
+            continue
+        pts: List[Tuple[float, float]] = []
+        for c in cells_sorted:
+            yv = values.get(c)
+            if yv is None:
+                continue
+            x = lin_map(c, x_min, x_max, left, left + cw)
+            y = lin_map(yv, 0, y_max, top + ch, top)
+            pts.append((x, y))
+        if len(pts) >= 2:
+            lines.append(
+                f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in pts)}" fill="none" stroke="{color}" stroke-width="2.0"/>'
+            )
+        for x, y in pts:
+            draw_point_marker(
+                lines,
+                x=x,
+                y=y,
+                marker=marker,
+                size=3.4,
+                fill=color,
+                stroke="#111",
+                stroke_width=0.8,
+            )
+        legend_items.append((label, color))
+
+    draw_legend(
+        lines,
+        items=legend_items,
+        x=left + cw + 18,
+        y=top + 8,
+        title="Metric",
+        marker="rect",
     )
     svg_finish(lines, out_path)
 
@@ -833,6 +1084,8 @@ def plot_runtime_vs_cells_by_phase(rows: Sequence[Dict[str, str]], out_path: Pat
     grouped: Dict[str, Dict[int, List[float]]] = {p: defaultdict(list) for p in phase_names}
     all_cells = set()
     for r in rows:
+        if not include_line_scatter_point(r["_status"]):
+            continue
         phase = r["_phase"]
         if phase not in grouped:
             continue
@@ -918,9 +1171,12 @@ def plot_scatter(
     y_label: str,
 ) -> None:
     settings = sorted(set(r["_setting"] for r in rows))
+    setting_family = family_by_setting(rows)
     colors = color_for_categories(settings)
     pts: List[Tuple[str, float, float]] = []
     for r in rows:
+        if not include_line_scatter_point(r["_status"]):
+            continue
         xv = x_fn(r)
         yv = y_fn(r)
         if xv is None or yv is None:
@@ -969,8 +1225,16 @@ def plot_scatter(
     for setting, xv, yv in pts:
         x = lin_map(xv, 0, x_max, left, left + cw)
         y = lin_map(yv, 0, y_max, top + ch, top)
-        lines.append(
-            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.1" fill="{colors[setting]}" fill-opacity="0.72" stroke="#111" stroke-width="0.6"/>'
+        draw_point_marker(
+            lines,
+            x=x,
+            y=y,
+            marker=marker_for_family(setting_family.get(setting, "unknown")),
+            size=3.1,
+            fill=colors[setting],
+            stroke="#111",
+            stroke_width=0.6,
+            fill_opacity=0.72,
         )
     draw_legend(
         lines,
@@ -978,7 +1242,14 @@ def plot_scatter(
         x=left + cw + 18,
         y=top + 8,
         title="Setting",
-        marker="circle",
+        marker="rect",
+    )
+    families_present = sorted(set(setting_family.get(s, "unknown") for s in settings))
+    draw_family_shape_legend(
+        lines,
+        families=families_present,
+        x=left + cw + 18,
+        y=top + 8 + 18 + 16 * len(settings) + 10,
     )
     svg_finish(lines, out_path)
 
@@ -1366,26 +1637,8 @@ def write_plot_manifest(out_dir: Path, generated: Sequence[Path]) -> None:
     (out_dir / "PLOTS.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description="Generate many SVG plots from config-matrix benchmark CSV.")
-    ap.add_argument("--csv", type=Path, required=True, help="Path to benchmark_matrix.csv")
-    ap.add_argument("--out-dir", type=Path, required=True, help="Output directory for SVG plots")
-    ap.add_argument("--title-prefix", default="Config Matrix", help="Subtitle prefix")
-    args = ap.parse_args()
-
-    csv_path = args.csv.resolve()
-    out_dir = args.out_dir.resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    if not csv_path.exists():
-        raise FileNotFoundError(f"CSV not found: {csv_path}")
-
-    rows = load_rows(csv_path)
-    for r in rows:
-        annotate_row(r)
-    subtitle = f"{args.title_prefix} | {csv_path}"
-
-    generated: List[Path] = []
-    chart_calls = [
+def build_chart_calls(rows: Sequence[Dict[str, str]], subtitle: str) -> List[Tuple[str, Callable[[Path], None]]]:
+    return [
         ("status_by_setting.svg", lambda p: plot_status_by_setting(rows, p, subtitle)),
         ("success_rate_by_setting.svg", lambda p: plot_success_rate(rows, p, subtitle)),
         ("status_by_domain.svg", lambda p: plot_status_by_domain(rows, p, subtitle)),
@@ -1414,6 +1667,7 @@ def main() -> int:
         ),
         ("runtime_cdf_by_setting.svg", lambda p: plot_runtime_cdf(rows, p, subtitle)),
         ("runtime_vs_cells_by_setting.svg", lambda p: plot_runtime_vs_cells(rows, p, subtitle)),
+        ("action_literals_vs_cells.svg", lambda p: plot_action_literals_vs_cells(rows, p, subtitle)),
         ("runtime_vs_cells_by_phase.svg", lambda p: plot_runtime_vs_cells_by_phase(rows, p, subtitle)),
         ("runtime_heatmap_domain_x_setting.svg", lambda p: plot_runtime_heatmap_domain_x_setting(rows, p, subtitle)),
         (
@@ -1462,6 +1716,28 @@ def main() -> int:
         ("cumulative_status_by_run_order.svg", lambda p: plot_cumulative_status(rows, p, subtitle)),
     ]
 
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Generate many SVG plots from config-matrix benchmark CSV.")
+    ap.add_argument("--csv", type=Path, required=True, help="Path to benchmark_matrix.csv")
+    ap.add_argument("--out-dir", type=Path, required=True, help="Output directory for SVG plots")
+    ap.add_argument("--title-prefix", default="Config Matrix", help="Subtitle prefix")
+    args = ap.parse_args()
+
+    csv_path = args.csv.resolve()
+    out_dir = args.out_dir.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV not found: {csv_path}")
+
+    rows = load_rows(csv_path)
+    for r in rows:
+        annotate_row(r)
+    subtitle = f"{args.title_prefix} | {csv_path}"
+
+    generated: List[Path] = []
+    chart_calls = build_chart_calls(rows, subtitle)
+
     for filename, fn in chart_calls:
         out_path = out_dir / filename
         try:
@@ -1470,6 +1746,37 @@ def main() -> int:
                 generated.append(out_path)
         except Exception as exc:
             print(f"[WARN] Failed to generate {filename}: {exc}")
+
+    section_specs: List[Tuple[str, str]] = [
+        ("custom", "custom"),
+        ("random-repeat", "repeats"),
+        ("growth", "growth"),
+    ]
+    for phase_name, section_tag in section_specs:
+        phase_rows = [r for r in rows if r["_phase"] == phase_name]
+        if not phase_rows:
+            continue
+        section_subtitle = f"{subtitle} | section={phase_name}"
+        for filename, fn in build_chart_calls(phase_rows, section_subtitle):
+            out_path = out_dir / f"section_{section_tag}_{filename}"
+            try:
+                fn(out_path)
+                if not out_path.exists():
+                    write_no_data_plot(
+                        out_path,
+                        title=f"Section {phase_name}: {filename}",
+                        subtitle=section_subtitle,
+                    )
+                generated.append(out_path)
+            except Exception as exc:
+                print(f"[WARN] Failed to generate {out_path.name}: {exc}")
+                write_no_data_plot(
+                    out_path,
+                    title=f"Section {phase_name}: {filename}",
+                    subtitle=section_subtitle,
+                    message=f"Plot generation failed: {exc}",
+                )
+                generated.append(out_path)
 
     write_plot_manifest(out_dir, generated)
     print(f"[OK] Generated {len(generated)} plots in {out_dir}")

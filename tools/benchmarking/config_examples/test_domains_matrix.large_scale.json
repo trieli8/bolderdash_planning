@@ -1,0 +1,157 @@
+{
+  "timeout_sec": 180,
+  "max_parallel_runs": 6,
+  "random_seed": 1337,
+  "domains_glob": "pddl/test_domains/domain*.pddl",
+  "custom_fail_streak_limit": 2,
+  "custom_levels_run_last": false,
+  "repeat_successful_runs": 3,
+  "growth_stop_on_failure": true,
+  "stop_remaining_random_repeats_for_pair_on_failure": true,
+  "custom_levels": [
+    "pddl/level_reduce.txt"
+  ],
+  "growth": {
+    "enabled": false,
+    "start_size": 4,
+    "max_size": 20,
+    "size_step": 1,
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "random_repeats": {
+    "enabled": false,
+    "sizes": ["5x5"],
+    "repeats_per_size": 10,
+    "stone_counts": [1, 2, 4, 4, 4, 8, 8, 8, 8, 8],
+    "stone_count_mode": "cycle",
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "planner_settings": [
+    {
+      "name": "fd-opt-blind-classic",
+      "family": "classic",
+      "planner": "fd",
+      "fd_optimal": true
+    },
+    {
+      "name": "fd-classic",
+      "family": "classic",
+      "planner": "fd"
+    },
+    {
+      "name": "fd-any-classic",
+      "family": "classic",
+      "planner": "fd",
+      "fd_keep_searching": true
+    },
+    {
+      "name": "fd-opt-long-classic",
+      "family": "classic",
+      "planner": "fd",
+      "fd_optimal": true,
+      "timeout_sec": 240
+    },
+    {
+      "name": "fd-any-long-classic",
+      "family": "classic",
+      "planner": "fd",
+      "fd_keep_searching": true,
+      "timeout_sec": 240
+    },
+    {
+      "name": "fd-short-classic",
+      "family": "classic",
+      "planner": "fd",
+      "timeout_sec": 90
+    },
+    {
+      "name": "fd-opt-blind-fa",
+      "family": "fa",
+      "planner": "fd",
+      "fd_optimal": true
+    },
+    {
+      "name": "fd-fa",
+      "family": "fa",
+      "planner": "fd"
+    },
+    {
+      "name": "fd-any-fa",
+      "family": "fa",
+      "planner": "fd",
+      "fd_keep_searching": true
+    },
+    {
+      "name": "fd-opt-long-fa",
+      "family": "fa",
+      "planner": "fd",
+      "fd_optimal": true,
+      "timeout_sec": 240
+    },
+    {
+      "name": "fd-any-long-fa",
+      "family": "fa",
+      "planner": "fd",
+      "fd_keep_searching": true,
+      "timeout_sec": 240
+    },
+    {
+      "name": "fd-short-fa",
+      "family": "fa",
+      "planner": "fd",
+      "timeout_sec": 90
+    },
+    {
+      "name": "enhsp-wastar-blind-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s WAStar -wh 1 -ties larger_g -h blind"
+    },
+    {
+      "name": "enhsp-wastar-hmax-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s WAStar -wh 1 -ties larger_g -h hmax"
+    },
+    {
+      "name": "enhsp-wastar-hrmax-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s WAStar -wh 1 -ties larger_g -h hrmax"
+    },
+    {
+      "name": "enhsp-wastar-ngc-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s WAStar -wh 1 -ties larger_g -h ngc"
+    },
+    {
+      "name": "enhsp-gbfs-blind-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s gbfs -h blind"
+    },
+    {
+      "name": "enhsp-gbfs-ngc-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s gbfs -h ngc"
+    },
+    {
+      "name": "enhsp-lazygbfs-hmrp-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s lazygbfs -h hmrp"
+    },
+    {
+      "name": "enhsp-wastar-hmrp-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s WAStar -wh 1 -ties larger_g -h hmrp"
+    }
+  ]
+}

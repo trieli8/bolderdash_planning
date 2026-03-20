@@ -471,6 +471,15 @@
             (check_roll_left)
             (not (updated ?c))
             (or (stone ?c) (gem ?c))
+            (or
+                (forall (?down - object) (not (down ?c ?down)))
+                (forall (?left ?down_left - object)
+                    (or
+                        (not (right-of ?left ?c))
+                        (not (down ?left ?down_left))
+                    )
+                )
+            )
         )
         :effect (and
             (not (can_roll_left))
@@ -547,6 +556,15 @@
             (check_roll_right)
             (not (updated ?c))
             (or (stone ?c) (gem ?c))
+            (or
+                (forall (?down - object) (not (down ?c ?down)))
+                (forall (?right ?down_right - object)
+                    (or
+                        (not (right-of ?c ?right))
+                        (not (down ?right ?down_right))
+                    )
+                )
+            )
         )
         :effect (and
             (not (can_roll_right))

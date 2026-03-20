@@ -6,13 +6,14 @@ import dataclasses
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict, Any, Sequence
 
 
 # -----------------------------
@@ -331,7 +332,13 @@ def _parse_fd_plan_file(plan_path: Path) -> List[Tuple[str, List[str]]]:
 # Planners
 # -----------------------------
 
-def solve_with_ff(domain: Path, problem: Path, timeout: int | None, stream: bool) -> PlanResult:
+def solve_with_ff(
+    domain: Path,
+    problem: Path,
+    timeout: int | None,
+    stream: bool,
+    planner_args: str = "",
+) -> PlanResult:
     root = repo_root()
     ff_bin = root / "planners" / "forced-action-ff" / "ff"
     ensure_executable(ff_bin)
@@ -346,7 +353,8 @@ def solve_with_ff(domain: Path, problem: Path, timeout: int | None, stream: bool
         shutil.copy2(problem, td_path / pname)
         
         pdir = str(td_path) + os.sep  # IMPORTANT: FF concatenates -p + filename
-        cmd = [str(ff_bin), "-p", pdir, "-o", dname, "-f", pname]
+        extra_args = shlex.split(planner_args or "")
+        cmd = [str(ff_bin), "-p", pdir, "-o", dname, "-f", pname] + extra_args
 
         try:
             if stream:
@@ -362,7 +370,11 @@ def solve_with_ff(domain: Path, problem: Path, timeout: int | None, stream: bool
                 actions=[],
                 raw_stdout="",
                 raw_stderr="",
-                metrics={"returncode": None, "time_sec": round(time.time() - start, 3)},
+                metrics={
+                    "returncode": None,
+                    "time_sec": round(time.time() - start, 3),
+                    "command": cmd,
+                },
             )
 
         actions: List[Tuple[str, List[str]]] = []
@@ -421,8 +433,26 @@ def solve_with_ff(domain: Path, problem: Path, timeout: int | None, stream: bool
         actions=actions,
         raw_stdout=out,
         raw_stderr=err,
-        metrics={"returncode": rc, "time_sec": round(time.time() - start, 3)},
+        metrics={
+            "returncode": rc,
+            "time_sec": round(time.time() - start, 3),
+            "command": cmd,
+        },
     )
+
+
+def _fd_args_override_default_search(extra_args: Sequence[str]) -> bool:
+    # If user supplied a complete FD search/alias configuration, do not
+    # inject the benchmarker's default --search expression.
+    override_flags = {
+        "--search",
+        "--evaluator",
+        "--heuristic",
+        "--alias",
+        "--portfolio",
+        "--portfolio-single-plan",
+    }
+    return any(tok in override_flags for tok in extra_args)
 
 
 def solve_with_fd(
@@ -432,6 +462,7 @@ def solve_with_fd(
     optimal: bool,
     stream: bool,
     keep_searching: bool = False,
+    planner_args: str = "",
 ) -> PlanResult:
     root = repo_root()
     fd_py = root / "planners" / "fast-downward" / "fast-downward.py"
@@ -443,12 +474,14 @@ def solve_with_fd(
     with tempfile.TemporaryDirectory(prefix="fd_run_") as td:
         td_path = Path(td)
 
+        extra_args = shlex.split(planner_args or "")
         if optimal:
             # Optimal: A* with IPDB heuristic (handles ADL after compilation better than lmcut alias).
-            cmd = [sys.executable, str(fd_py), str(domain), str(problem),
-                #    "--search", "astar(merge_and_shrink(shrink_strategy=shrink_bisimulation(greedy=false),merge_strategy=merge_sccs(order_of_sccs=topological,merge_selector=score_based_filtering(scoring_functions=[goal_relevance(),dfp(),total_order()])),label_reduction=exact(before_shrinking=true,before_merging=false),max_states=50k,threshold_before_merge=1))"]
-                   "--search", "astar(blind(verbosity=debug))"
-                   ]
+            default_search_args = [
+                # "--search", "astar(merge_and_shrink(shrink_strategy=shrink_bisimulation(greedy=false),merge_strategy=merge_sccs(order_of_sccs=topological,merge_selector=score_based_filtering(scoring_functions=[goal_relevance(),dfp(),total_order()])),label_reduction=exact(before_shrinking=true,before_merging=false),max_states=50k,threshold_before_merge=1))"
+                "--search",
+                "astar(blind(verbosity=debug))",
+            ]
             tag = "fd-opt"
         else:
             # Satisficing: default stops after first plan; optionally run an anytime loop.
@@ -463,7 +496,10 @@ def solve_with_fd(
             else:
                 search = "lazy_greedy([ff()], preferred=[ff()])"
                 tag = "fd"
-            cmd = [sys.executable, str(fd_py), str(domain), str(problem), "--search", search]
+            default_search_args = ["--search", search]
+
+        fd_args = extra_args if _fd_args_override_default_search(extra_args) else (default_search_args + extra_args)
+        cmd = [sys.executable, str(fd_py), str(domain), str(problem)] + fd_args
 
         try:
             if stream:
@@ -485,6 +521,7 @@ def solve_with_fd(
                     "returncode": None,
                     "time_sec": round(time.time() - start, 3),
                     "plan_file": str(plan_files[-1]) if plan_files else None,
+                    "command": cmd,
                 },
             )
 
@@ -525,6 +562,7 @@ def solve_with_fd(
                 "time_sec": round(time.time() - start, 3),
                 "plan_file": str(plan_files[-1]) if plan_files else None,
                 "num_plan_files": len(plan_files),
+                "command": cmd,
             },
         )
 
@@ -593,6 +631,11 @@ def main() -> int:
     ap.add_argument("--domain", type=Path, help="Domain PDDL (required unless using --play-plan)")
     ap.add_argument("--problem", type=Path, help="Problem PDDL (required unless using --play-plan)")
     ap.add_argument("--planner", choices=["ff", "fd", "both"], default="fd")
+    ap.add_argument(
+        "--planner-args",
+        default="",
+        help="Extra args passed through to FF/FD planner invocation.",
+    )
     ap.add_argument("--timeout", type=int, default=None)
     ap.add_argument("--optimal", action="store_true", help="FD only: attempt optimal planning (alias seq-opt-lmcut)")
     ap.add_argument("--fd-keep-searching", action="store_true", help="FD only: keep searching for better solutions until timeout using iterated greedy search")
@@ -657,7 +700,13 @@ def main() -> int:
     play_candidates: List[Path] = []
 
     if args.planner in ("ff", "both"):
-        r = solve_with_ff(domain, problem, timeout=args.timeout, stream=args.stream)
+        r = solve_with_ff(
+            domain,
+            problem,
+            timeout=args.timeout,
+            stream=args.stream,
+            planner_args=args.planner_args,
+        )
         results.append(r)
 
         ff_plan_path = out_dir / "ff.plan"
@@ -677,6 +726,7 @@ def main() -> int:
             optimal=args.optimal,
             stream=args.stream,
             keep_searching=args.fd_keep_searching,
+            planner_args=args.planner_args,
         )
         results.append(r)
 

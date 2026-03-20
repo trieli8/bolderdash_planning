@@ -199,6 +199,27 @@ def parse_size_values(values: Sequence[str]) -> List[Tuple[int, int]]:
     return deduped
 
 
+def parse_growth_size_threshold(raw: Any) -> Optional[int]:
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise ValueError("growth size threshold must be int or ROWSxCOLS, not bool.")
+    if isinstance(raw, (int, float)):
+        size = int(raw)
+    else:
+        token = str(raw).strip()
+        if not token:
+            return None
+        if re.fullmatch(r"\d+\s*[xX]\s*\d+", token):
+            rows, cols = parse_size_token(token)
+            size = min(rows, cols)
+        else:
+            size = int(token)
+    if size < 0:
+        raise ValueError("growth size threshold must be >= 0.")
+    return size
+
+
 @dataclass(frozen=True)
 class PlannerSetting:
     name: str
@@ -260,6 +281,8 @@ class PairState:
     random_repeat_index: int
     growth_index: int
     custom_fail_streak: int
+    growth_max_nonfailure_size: int
+    pending_excluded_runs: int
     in_flight: bool
     done: bool
 
@@ -591,6 +614,7 @@ def generate_level_text(
     max_time_scale: int,
 ) -> str:
     AGENT = 0
+    EMPTY = 1
     DIRT = 2
     STONE = 3
     GEM = 5
@@ -613,32 +637,42 @@ def generate_level_text(
     if gem_pos is None or best_dist <= 1:
         raise ValueError(f"Could not place non-adjacent gem for {rows}x{cols}")
 
-    blocked = {agent_pos, gem_pos}
-    stone_candidates = [
-        (rows // 2, cols // 2),
-        (rows - 1, 0),
-        (0, cols - 1),
-        (rows - 1, cols - 1),
-    ]
-    stone_pos = None
-    for r, c in stone_candidates:
-        if 0 <= r < rows and 0 <= c < cols and (r, c) not in blocked:
-            stone_pos = (r, c)
-            break
-    if stone_pos is None:
-        for r in range(rows - 1, -1, -1):
-            for c in range(cols - 1, -1, -1):
-                if (r, c) not in blocked:
-                    stone_pos = (r, c)
-                    break
-            if stone_pos is not None:
-                break
-    if stone_pos is None:
-        raise ValueError(f"Could not place stone for {rows}x{cols}")
-
     grid[agent_pos[0]][agent_pos[1]] = AGENT
     grid[gem_pos[0]][gem_pos[1]] = GEM
-    grid[stone_pos[0]][stone_pos[1]] = STONE
+
+    # Deterministic but spatially varied placement for synthetic growth maps.
+    layout_seed = (
+        rows * 73856093
+        ^ cols * 19349663
+        ^ required_gems * 83492791
+        ^ max_time_scale * 2654435761
+    )
+    layout_rng = random.Random(layout_seed)
+
+    stone_pool = [
+        (r, c)
+        for r in range(rows)
+        for c in range(cols)
+        if (r, c) not in {agent_pos, gem_pos}
+    ]
+    if not stone_pool:
+        raise ValueError(f"Could not place stones for {rows}x{cols}")
+    desired_stones = max(2, min((rows * cols) // 40 + 1, 8))
+    stones_to_place = min(desired_stones, len(stone_pool))
+    stone_positions = layout_rng.sample(stone_pool, stones_to_place)
+    for r, c in stone_positions:
+        grid[r][c] = STONE
+
+    blocked = {agent_pos, gem_pos}
+    blocked.update(stone_positions)
+
+    # Increase and spread "air" (empty cells) across the full map, not only
+    # near the start corner.
+    air_pool = [(r, c) for r in range(rows) for c in range(cols) if (r, c) not in blocked]
+    if air_pool:
+        desired_air = min(len(air_pool), max(3, min(len(air_pool) // 5, 50)))
+        for r, c in layout_rng.sample(air_pool, desired_air):
+            grid[r][c] = EMPTY
 
     max_time = max(max_time_min, rows * cols * max_time_scale)
     header = f"{rows}|{cols}|{max_time}|{required_gems}|"
@@ -657,6 +691,7 @@ def generate_random_level_text(
     stone_count: int,
 ) -> str:
     AGENT = 0
+    EMPTY = 1
     DIRT = 2
     STONE = 3
     GEM = 5
@@ -673,7 +708,11 @@ def generate_random_level_text(
         (r, c) for (r, c) in all_cells if abs(r - agent_pos[0]) + abs(c - agent_pos[1]) > 1
     ]
     gem_pool = non_adjacent_cells if non_adjacent_cells else all_cells
-    gem_pos = rng.choice(gem_pool)
+
+    # Bias gems toward higher rows while still allowing full-map variety.
+    # Higher rows receive larger weight.
+    gem_weights = [float((rows - r) ** 2) for (r, _c) in gem_pool]
+    gem_pos = rng.choices(gem_pool, weights=gem_weights, k=1)[0]
 
     stone_pool = [(r, c) for (r, c) in all_cells if (r, c) != gem_pos]
     if not stone_pool:
@@ -684,6 +723,14 @@ def generate_random_level_text(
 
     grid[agent_pos[0]][agent_pos[1]] = AGENT
     grid[gem_pos[0]][gem_pos[1]] = GEM
+
+    occupied = {agent_pos, gem_pos}
+    occupied.update((r, c) for r in range(rows) for c in range(cols) if grid[r][c] == STONE)
+    air_pool = [(r, c) for r in range(rows) for c in range(cols) if (r, c) not in occupied]
+    if air_pool:
+        desired_air = min(len(air_pool), max(2, min(len(air_pool) // 3, 20)))
+        for r, c in rng.sample(air_pool, desired_air):
+            grid[r][c] = EMPTY
 
     max_time = max(max_time_min, rows * cols * max_time_scale)
     header = f"{rows}|{cols}|{max_time}|{required_gems}|"
@@ -999,6 +1046,7 @@ def parse_classic_metrics(full_text: str) -> Dict[str, Any]:
 
     metrics["translator_operators"] = parse_first_int(full_text, r"Translator operators:\s*([0-9.,]+)")
     metrics["action_set_size"] = metrics["translator_operators"]
+    metrics["facts_count"] = parse_first_int(full_text, r"Translator facts:\s*([0-9.,]+)")
 
     metrics["plan_length_reported"] = parse_last_int(full_text, r"Plan length:\s*([0-9.,]+)\s*step")
     metrics["plan_cost_reported"] = parse_last_float(full_text, r"Plan cost:\s*([0-9.,]+)")
@@ -1088,6 +1136,7 @@ def execute_planner(
                 problem=problem_path,
                 timeout=setting.timeout_sec,
                 stream=setting.stream,
+                planner_args=setting.planner_args,
             )
         else:
             result = solve_with_fd(
@@ -1097,6 +1146,7 @@ def execute_planner(
                 optimal=setting.fd_optimal,
                 stream=setting.stream,
                 keep_searching=setting.fd_keep_searching,
+                planner_args=setting.planner_args,
             )
         return (
             result.status,
@@ -1425,8 +1475,66 @@ def next_task_for_state(
     random_repeat_levels: Sequence[LevelInfo],
     growth_levels: Sequence[LevelInfo],
     run_id: int,
+    custom_levels_run_last: bool,
+    custom_levels_require_growth_past_size: Optional[int],
 ) -> Optional[RunTask]:
     if state.done:
+        return None
+
+    if custom_levels_run_last:
+        if state.phase == "random-repeat":
+            if state.random_repeat_index < len(random_repeat_levels):
+                level = random_repeat_levels[state.random_repeat_index]
+                return RunTask(
+                    run_id=run_id,
+                    pairing_id=state.pairing.id,
+                    setting=state.pairing.setting,
+                    domain=state.pairing.domain,
+                    level=level,
+                    phase="random-repeat",
+                )
+            state.phase = "growth"
+
+        if state.phase == "growth":
+            if state.growth_index < len(growth_levels):
+                level = growth_levels[state.growth_index]
+                return RunTask(
+                    run_id=run_id,
+                    pairing_id=state.pairing.id,
+                    setting=state.pairing.setting,
+                    domain=state.pairing.domain,
+                    level=level,
+                    phase="growth",
+                )
+
+            custom_gate_ok = True
+            if custom_levels_require_growth_past_size is not None:
+                custom_gate_ok = (
+                    state.growth_max_nonfailure_size > custom_levels_require_growth_past_size
+                )
+            if custom_gate_ok:
+                state.phase = "custom"
+            else:
+                state.pending_excluded_runs += max(0, len(custom_levels) - state.custom_index)
+                state.custom_index = len(custom_levels)
+                state.done = True
+                return None
+
+        if state.phase == "custom":
+            if state.custom_index < len(custom_levels):
+                level = custom_levels[state.custom_index]
+                return RunTask(
+                    run_id=run_id,
+                    pairing_id=state.pairing.id,
+                    setting=state.pairing.setting,
+                    domain=state.pairing.domain,
+                    level=level,
+                    phase="custom",
+                )
+            state.done = True
+            return None
+
+        state.done = True
         return None
 
     if state.phase == "custom":
@@ -1480,7 +1588,11 @@ def advance_state_after_result(
     custom_fail_limit: int,
     growth_stop_on_failure: bool,
     custom_levels_count: int,
+    random_repeat_levels_count: int,
     growth_levels_count: int,
+    custom_levels_run_last: bool,
+    custom_levels_require_growth_past_size: Optional[int],
+    random_repeat_failure_stops_pair_repeats: bool,
 ) -> int:
     excluded_runs = 0
     if row.phase == "custom":
@@ -1492,14 +1604,38 @@ def advance_state_after_result(
         if state.custom_fail_streak >= custom_fail_limit:
             excluded_runs += max(0, custom_levels_count - state.custom_index)
             state.custom_index = custom_levels_count
-            state.phase = "random-repeat"
+            if custom_levels_run_last:
+                state.done = True
+            else:
+                state.phase = "random-repeat"
     elif row.phase == "random-repeat":
         state.random_repeat_index += 1
+        if random_repeat_failure_stops_pair_repeats and is_failure_status(row.status):
+            excluded_runs += max(0, random_repeat_levels_count - state.random_repeat_index)
+            state.random_repeat_index = random_repeat_levels_count
+            state.phase = "growth"
     elif row.phase == "growth":
+        if not is_failure_status(row.status):
+            state.growth_max_nonfailure_size = max(
+                state.growth_max_nonfailure_size,
+                min(row.rows, row.cols),
+            )
         state.growth_index += 1
         if growth_stop_on_failure and is_failure_status(row.status):
             excluded_runs += max(0, growth_levels_count - state.growth_index)
             state.done = True
+        elif custom_levels_run_last and state.growth_index >= growth_levels_count:
+            custom_gate_ok = True
+            if custom_levels_require_growth_past_size is not None:
+                custom_gate_ok = (
+                    state.growth_max_nonfailure_size > custom_levels_require_growth_past_size
+                )
+            if custom_gate_ok:
+                state.phase = "custom"
+            else:
+                excluded_runs += max(0, custom_levels_count - state.custom_index)
+                state.custom_index = custom_levels_count
+                state.done = True
     return excluded_runs
 
 
@@ -1509,10 +1645,34 @@ def remaining_base_runs_for_state(
     custom_levels_count: int,
     random_repeat_levels_count: int,
     growth_levels_count: int,
+    custom_levels_run_last: bool,
+    custom_levels_require_growth_past_size: Optional[int],
 ) -> int:
     if state.done:
         return 0
     remaining = 0
+    if custom_levels_run_last:
+        if state.phase == "random-repeat":
+            remaining += max(0, random_repeat_levels_count - state.random_repeat_index)
+            remaining += max(0, growth_levels_count - state.growth_index)
+            remaining += max(0, custom_levels_count - state.custom_index)
+            return remaining
+        if state.phase == "growth":
+            growth_left = max(0, growth_levels_count - state.growth_index)
+            remaining += growth_left
+            if growth_left > 0:
+                remaining += max(0, custom_levels_count - state.custom_index)
+            elif (
+                custom_levels_require_growth_past_size is None
+                or state.growth_max_nonfailure_size > custom_levels_require_growth_past_size
+            ):
+                remaining += max(0, custom_levels_count - state.custom_index)
+            return remaining
+        if state.phase == "custom":
+            remaining += max(0, custom_levels_count - state.custom_index)
+            return remaining
+        return 0
+
     if state.phase == "custom":
         remaining += max(0, custom_levels_count - state.custom_index)
         remaining += max(0, random_repeat_levels_count - state.random_repeat_index)
@@ -1597,7 +1757,8 @@ def main() -> int:
         description=(
             "Run planner settings from a JSON config across compatible test domains, "
             "with custom-level fail streak cutoff, optional random-repeat maps, "
-            "optional repeats for solved instances, and growth-level timeout cutoff."
+            "optional repeats for solved instances, optional random-repeat early-stop, "
+            "optional custom-level run-last growth gating, and growth-level timeout cutoff."
         )
     )
     ap.add_argument(
@@ -1673,6 +1834,24 @@ def main() -> int:
         print("[ERR] custom_fail_streak_limit must be > 0.", file=sys.stderr)
         return 2
     growth_stop_on_failure = bool(cfg.get("growth_stop_on_failure", True))
+    custom_levels_run_last = bool(cfg.get("custom_levels_run_last", False))
+    custom_levels_require_growth_past_size = parse_growth_size_threshold(
+        cfg.get("custom_levels_require_growth_past_size")
+    )
+    if custom_levels_require_growth_past_size is not None:
+        custom_levels_run_last = True
+    random_repeat_failure_stops_pair_repeats = bool(
+        cfg.get(
+            "stop_remaining_random_repeats_for_pair_on_failure",
+            cfg.get(
+                "random_repeat_failure_stops_pair_repeats",
+                cfg.get(
+                    "terminate_run_on_random_repeat_failure",
+                    cfg.get("random_repeat_failure_terminates_run", False),
+                ),
+            ),
+        )
+    )
     repeat_successful_runs_raw = cfg.get("repeat_successful_runs")
     if repeat_successful_runs_raw is None:
         for alias in ("repeat_successful_solvers", "repeat_successful_sovlers", "repeat_successful_solver_runs"):
@@ -1746,6 +1925,15 @@ def main() -> int:
     print(f"[INFO] Growth levels: {len(growth_levels)}")
     print(f"[INFO] Max matrix runs (upper bound): {max_matrix_runs}")
     print(f"[INFO] Repeat solved instances: {repeat_successful_runs}")
+    print(f"[INFO] Custom levels run last: {custom_levels_run_last}")
+    print(
+        "[INFO] Custom levels require growth past size: "
+        f"{custom_levels_require_growth_past_size if custom_levels_require_growth_past_size is not None else 'disabled'}"
+    )
+    print(
+        "[INFO] Random-repeat failure stops remaining repeats for that pair: "
+        f"{random_repeat_failure_stops_pair_repeats}"
+    )
     print(f"[INFO] Max parallel runs: {max_parallel} (QoS: equal thread priority)")
     print(f"[INFO] Random seed: {seed}")
     print(f"[INFO] Dry run: {args.dry_run}")
@@ -1756,11 +1944,13 @@ def main() -> int:
     states: Dict[str, PairState] = {
         p.id: PairState(
             pairing=p,
-            phase="custom",
+            phase=("random-repeat" if custom_levels_run_last else "custom"),
             custom_index=0,
             random_repeat_index=0,
             growth_index=0,
             custom_fail_streak=0,
+            growth_max_nonfailure_size=0,
+            pending_excluded_runs=0,
             in_flight=False,
             done=False,
         )
@@ -1783,6 +1973,10 @@ def main() -> int:
         "max_parallel": max_parallel,
         "custom_fail_streak_limit": custom_fail_limit,
         "growth_stop_on_failure": growth_stop_on_failure,
+        "custom_levels_run_last": custom_levels_run_last,
+        "custom_levels_require_growth_past_size": custom_levels_require_growth_past_size,
+        "stop_remaining_random_repeats_for_pair_on_failure": random_repeat_failure_stops_pair_repeats,
+        "terminate_run_on_random_repeat_failure": random_repeat_failure_stops_pair_repeats,
         "repeat_successful_runs": repeat_successful_runs,
         "domains": [str(d.path) for d in domains],
         "settings": [asdict(s) | {"enhsp_jar": str(s.enhsp_jar) if s.enhsp_jar else None, "optic_bin": str(s.optic_bin) if s.optic_bin else None, "problem_gen": str(s.problem_gen) if s.problem_gen else None} for s in settings],
@@ -1834,6 +2028,8 @@ def main() -> int:
                     custom_levels_count=len(custom_levels),
                     random_repeat_levels_count=len(random_repeat_levels),
                     growth_levels_count=len(growth_levels),
+                    custom_levels_run_last=custom_levels_run_last,
+                    custom_levels_require_growth_past_size=custom_levels_require_growth_past_size,
                 )
                 * st.pairing.setting.timeout_sec
             )
@@ -1862,8 +2058,13 @@ def main() -> int:
                             random_repeat_levels=random_repeat_levels,
                             growth_levels=growth_levels,
                             run_id=run_counter,
+                            custom_levels_run_last=custom_levels_run_last,
+                            custom_levels_require_growth_past_size=custom_levels_require_growth_past_size,
                         )
                     if task is None:
+                        if st.pending_excluded_runs > 0:
+                            excluded_base_runs += st.pending_excluded_runs
+                            st.pending_excluded_runs = 0
                         st.done = True
                         continue
 
@@ -1977,6 +2178,19 @@ def main() -> int:
                     rows.append(row)
                     append_csv_rows(output_csv, [row])
 
+                    if (
+                        random_repeat_failure_stops_pair_repeats
+                        and row.phase == "random-repeat"
+                        and is_failure_status(row.status)
+                        and completed_task.repeat_index == 0
+                    ):
+                        print(
+                            "[WARN] Random-repeat failure encountered for pairing "
+                            f"{row.planner_setting} / {Path(row.domain).name} at "
+                            f"{Path(row.level).name if row.level else '-'} ({row.status}). "
+                            "Remaining random-repeat levels for this pairing will be skipped."
+                        )
+
                     if completed_task.repeat_index == 0:
                         excluded_base_runs += advance_state_after_result(
                             st,
@@ -1984,7 +2198,11 @@ def main() -> int:
                             custom_fail_limit=custom_fail_limit,
                             growth_stop_on_failure=growth_stop_on_failure,
                             custom_levels_count=len(custom_levels),
+                            random_repeat_levels_count=len(random_repeat_levels),
                             growth_levels_count=len(growth_levels),
+                            custom_levels_run_last=custom_levels_run_last,
+                            custom_levels_require_growth_past_size=custom_levels_require_growth_past_size,
+                            random_repeat_failure_stops_pair_repeats=random_repeat_failure_stops_pair_repeats,
                         )
                         if repeat_successful_runs > 0 and is_success_status(row.status):
                             for rep_idx in range(1, repeat_successful_runs + 1):
