@@ -1,0 +1,139 @@
+{
+  "timeout_sec": 300,
+  "max_parallel_runs": 6,
+  "random_seed": 1337,
+  "domains_glob": "pddl/test_domains/domain*.pddl",
+  "custom_fail_streak_limit": 1,
+  "custom_levels_require_growth_past_size": "7x7",
+  "custom_levels_run_last": true, 
+  "repeat_successful_runs": 2,
+  "growth_stop_on_failure": true,
+  "stop_remaining_random_repeats_for_pair_on_failure": true,
+  "custom_levels": [
+    "pddl/level_reduce.txt",
+    "pddl/level.txt"
+  ],
+  "growth": {
+    "enabled": true,
+    "start_size": 4,
+    "max_size": 30,
+    "size_step": 1,
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "random_repeats": {
+    "enabled": true,
+    "sizes": ["5x5"],
+    "repeats_per_size": 10,
+    "stone_counts": [1, 2, 4, 4, 4, 8, 8, 8, 8, 8],
+    "stone_count_mode": "cycle",
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "planner_settings": [
+    {
+      "name": "fd-lazy-greedy-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy_greedy([h],preferred=[h]))"
+    },
+    {
+      "name": "fd-lazy-wastar-w3-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy_wastar([h],preferred=[h],w=3))"
+    },
+    {
+      "name": "fd-astar-blind-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search \"astar(blind())\""
+    },
+    {
+      "name": "fd-astar-hmax-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search \"astar(hmax())\""
+    },
+    {
+      "name": "fd-lazy-greedy-ff-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search \"let(hff, ff(), lazy_greedy([hff], preferred=[hff]))\""
+    },
+    {
+      "name": "fd-lazy-greedy-cea-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search \"let(hcea, cea(), lazy_greedy([hcea], preferred=[hcea]))\""
+    },
+    {
+      "name": "fd-lazy-greedy-ff-cea-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search \"let(hff, ff(), let(hcea, cea(), lazy_greedy([hff, hcea], preferred=[hff, hcea])))\""
+    },
+    {
+      "name": "fd-lazy-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy(single(h),preferred=[h]))"
+    },
+    {
+      "name": "fd-lazy-greedy-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy_greedy([h],preferred=[h]))"
+    },
+    {
+      "name": "fd-lazy-wastar-w3-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy_wastar([h],preferred=[h],w=3))"
+    },
+    {
+      "name": "fd-lazy-greedy-ff-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search \"let(hff, ff(), lazy_greedy([hff], preferred=[hff]))\""
+    },
+    {
+      "name": "fd-lazy-greedy-cea-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search \"let(hcea, cea(), lazy_greedy([hcea], preferred=[hcea]))\""
+    },
+    {
+      "name": "fd-lazy-greedy-ff-cea-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search \"let(hff, ff(), let(hcea, cea(), lazy_greedy([hff, hcea], preferred=[hff, hcea])))\""
+    },
+    {
+      "name": "enhsp-wastar-blind-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s WAStar -wh 1 -ties larger_g -h blind"
+    },
+    {
+      "name": "enhsp-wastar-ngc-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s WAStar -wh 1 -ties larger_g -h ngc"
+    },
+    {
+      "name": "enhsp-gbfs-blind-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s gbfs -h blind"
+    },
+    {
+      "name": "enhsp-gbfs-ngc-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s gbfs -h ngc"
+    }
+  ]
+}

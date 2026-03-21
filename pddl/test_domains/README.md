@@ -22,7 +22,7 @@ This folder contains the generated matrix requested from:
   - `non-scanner_separated_actions` -> `pddl/domain.pddl`
 
 - `domain_plus_*_events`
-  - `scanner_combined_events` -> `pddl/domain_plus_scanner_separated_events_fluents.pddl`
+  - `scanner_combined_events` -> `pddl/domain_plus_scanner_separated_events.pddl`
   - `scanner_separated_events` -> `pddl/domain_plus_scanner_separated_events.pddl`
   - `non-scanner_combined_events` -> `pddl/domain_plus_from_domain.pddl`
   - `non-scanner_separated_events` -> `pddl/domain_plus_from_domain.pddl`

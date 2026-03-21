@@ -784,7 +784,7 @@
   )
 
   (:action physics_stone_noop_simple
-    :parameters (?c ?next ?left ?right ?down_left ?down ?down_right - real-cell)
+    :parameters (?c ?next - real-cell ?left ?right ?down_left ?down ?down_right - cell)
     :precondition (and
       (scan-required)
       (scan-at ?c)
@@ -827,7 +827,7 @@
   )
 
   (:action physics_gem_noop_simple
-    :parameters (?c ?next ?left ?right ?down_left ?down ?down_right - real-cell)
+    :parameters (?c ?next - real-cell ?left ?right ?down_left ?down ?down_right - cell)
     :precondition (and
       (scan-required)
       (scan-at ?c)
@@ -870,7 +870,7 @@
   )
 
   (:action physics_stone_noop
-    :parameters (?c ?next - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right)
+    :parameters (?c ?next - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right - cell)
     :precondition (and
       (scan-required)
       (scan-at ?c)
@@ -959,7 +959,7 @@
   )
 
   (:action physics_gem_noop
-    :parameters (?c ?next - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right)
+    :parameters (?c ?next - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right - cell)
     :precondition (and
       (scan-required)
       (scan-at ?c)

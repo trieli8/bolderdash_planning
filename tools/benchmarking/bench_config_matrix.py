@@ -220,6 +220,27 @@ def parse_growth_size_threshold(raw: Any) -> Optional[int]:
     return size
 
 
+def parse_cells_threshold(raw: Any, *, field_name: str) -> Optional[int]:
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise ValueError(f"{field_name} must be int or ROWSxCOLS, not bool.")
+    if isinstance(raw, (int, float)):
+        cells = int(raw)
+    else:
+        token = str(raw).strip()
+        if not token:
+            return None
+        if re.fullmatch(r"\d+\s*[xX]\s*\d+", token):
+            rows, cols = parse_size_token(token)
+            cells = rows * cols
+        else:
+            cells = int(token)
+    if cells < 0:
+        raise ValueError(f"{field_name} must be >= 0.")
+    return cells
+
+
 @dataclass(frozen=True)
 class PlannerSetting:
     name: str
@@ -1468,6 +1489,68 @@ def build_pairings(settings: Sequence[PlannerSetting], domains: Sequence[DomainI
     return pairings
 
 
+def make_run_task(
+    state: PairState,
+    *,
+    run_id: int,
+    level: LevelInfo,
+    phase: str,
+) -> RunTask:
+    return RunTask(
+        run_id=run_id,
+        pairing_id=state.pairing.id,
+        setting=state.pairing.setting,
+        domain=state.pairing.domain,
+        level=level,
+        phase=phase,
+    )
+
+
+def next_noncustom_task_for_state(
+    state: PairState,
+    *,
+    random_repeat_levels: Sequence[LevelInfo],
+    growth_levels: Sequence[LevelInfo],
+    run_id: int,
+    active_custom_min_cells: Optional[int] = None,
+    only_smaller_while_custom_running: bool = False,
+    noncustom_percent_smaller_than_custom: float = 0.0,
+    noncustom_max_cells_while_custom_running: Optional[int] = None,
+) -> Optional[RunTask]:
+    candidates: List[RunTask] = []
+    if state.random_repeat_index < len(random_repeat_levels):
+        level = random_repeat_levels[state.random_repeat_index]
+        candidates.append(make_run_task(state, run_id=run_id, level=level, phase="random-repeat"))
+    if state.growth_index < len(growth_levels):
+        level = growth_levels[state.growth_index]
+        candidates.append(make_run_task(state, run_id=run_id, level=level, phase="growth"))
+
+    if active_custom_min_cells is not None:
+        if noncustom_max_cells_while_custom_running is not None:
+            candidates = [
+                task
+                for task in candidates
+                if task.level.cells <= noncustom_max_cells_while_custom_running
+            ]
+        if only_smaller_while_custom_running:
+            max_cells_exclusive = active_custom_min_cells * (
+                1.0 - (noncustom_percent_smaller_than_custom / 100.0)
+            )
+            candidates = [task for task in candidates if task.level.cells < max_cells_exclusive]
+    if not candidates:
+        return None
+
+    return min(
+        candidates,
+        key=lambda task: (
+            task.level.cells,
+            0 if task.phase == "random-repeat" else 1,
+            task.level.rows,
+            task.level.cols,
+        ),
+    )
+
+
 def next_task_for_state(
     state: PairState,
     *,
@@ -1477,35 +1560,58 @@ def next_task_for_state(
     run_id: int,
     custom_levels_run_last: bool,
     custom_levels_require_growth_past_size: Optional[int],
+    interleave_smaller_noncustom_with_custom: bool = False,
+    max_parallel_custom_runs: int = 1,
+    active_custom_runs: int = 0,
+    active_custom_min_cells: Optional[int] = None,
+    only_smaller_while_custom_running: bool = False,
+    noncustom_percent_smaller_than_custom: float = 0.0,
+    noncustom_max_cells_while_custom_running: Optional[int] = None,
 ) -> Optional[RunTask]:
     if state.done:
         return None
+
+    if interleave_smaller_noncustom_with_custom and not custom_levels_run_last:
+        if active_custom_runs > 0:
+            task = next_noncustom_task_for_state(
+                state,
+                random_repeat_levels=random_repeat_levels,
+                growth_levels=growth_levels,
+                run_id=run_id,
+                active_custom_min_cells=active_custom_min_cells,
+                only_smaller_while_custom_running=only_smaller_while_custom_running,
+                noncustom_percent_smaller_than_custom=noncustom_percent_smaller_than_custom,
+                noncustom_max_cells_while_custom_running=noncustom_max_cells_while_custom_running,
+            )
+            if task is not None:
+                return task
+
+        if state.custom_index < len(custom_levels) and active_custom_runs < max_parallel_custom_runs:
+            level = custom_levels[state.custom_index]
+            return make_run_task(state, run_id=run_id, level=level, phase="custom")
+
+        return next_noncustom_task_for_state(
+            state,
+            random_repeat_levels=random_repeat_levels,
+            growth_levels=growth_levels,
+            run_id=run_id,
+            active_custom_min_cells=active_custom_min_cells,
+            only_smaller_while_custom_running=only_smaller_while_custom_running,
+            noncustom_percent_smaller_than_custom=noncustom_percent_smaller_than_custom,
+            noncustom_max_cells_while_custom_running=noncustom_max_cells_while_custom_running,
+        )
 
     if custom_levels_run_last:
         if state.phase == "random-repeat":
             if state.random_repeat_index < len(random_repeat_levels):
                 level = random_repeat_levels[state.random_repeat_index]
-                return RunTask(
-                    run_id=run_id,
-                    pairing_id=state.pairing.id,
-                    setting=state.pairing.setting,
-                    domain=state.pairing.domain,
-                    level=level,
-                    phase="random-repeat",
-                )
+                return make_run_task(state, run_id=run_id, level=level, phase="random-repeat")
             state.phase = "growth"
 
         if state.phase == "growth":
             if state.growth_index < len(growth_levels):
                 level = growth_levels[state.growth_index]
-                return RunTask(
-                    run_id=run_id,
-                    pairing_id=state.pairing.id,
-                    setting=state.pairing.setting,
-                    domain=state.pairing.domain,
-                    level=level,
-                    phase="growth",
-                )
+                return make_run_task(state, run_id=run_id, level=level, phase="growth")
 
             custom_gate_ok = True
             if custom_levels_require_growth_past_size is not None:
@@ -1523,14 +1629,7 @@ def next_task_for_state(
         if state.phase == "custom":
             if state.custom_index < len(custom_levels):
                 level = custom_levels[state.custom_index]
-                return RunTask(
-                    run_id=run_id,
-                    pairing_id=state.pairing.id,
-                    setting=state.pairing.setting,
-                    domain=state.pairing.domain,
-                    level=level,
-                    phase="custom",
-                )
+                return make_run_task(state, run_id=run_id, level=level, phase="custom")
             state.done = True
             return None
 
@@ -1540,40 +1639,19 @@ def next_task_for_state(
     if state.phase == "custom":
         if state.custom_index < len(custom_levels):
             level = custom_levels[state.custom_index]
-            return RunTask(
-                run_id=run_id,
-                pairing_id=state.pairing.id,
-                setting=state.pairing.setting,
-                domain=state.pairing.domain,
-                level=level,
-                phase="custom",
-            )
+            return make_run_task(state, run_id=run_id, level=level, phase="custom")
         state.phase = "random-repeat"
 
     if state.phase == "random-repeat":
         if state.random_repeat_index < len(random_repeat_levels):
             level = random_repeat_levels[state.random_repeat_index]
-            return RunTask(
-                run_id=run_id,
-                pairing_id=state.pairing.id,
-                setting=state.pairing.setting,
-                domain=state.pairing.domain,
-                level=level,
-                phase="random-repeat",
-            )
+            return make_run_task(state, run_id=run_id, level=level, phase="random-repeat")
         state.phase = "growth"
 
     if state.phase == "growth":
         if state.growth_index < len(growth_levels):
             level = growth_levels[state.growth_index]
-            return RunTask(
-                run_id=run_id,
-                pairing_id=state.pairing.id,
-                setting=state.pairing.setting,
-                domain=state.pairing.domain,
-                level=level,
-                phase="growth",
-            )
+            return make_run_task(state, run_id=run_id, level=level, phase="growth")
         state.done = True
         return None
 
@@ -1593,8 +1671,42 @@ def advance_state_after_result(
     custom_levels_run_last: bool,
     custom_levels_require_growth_past_size: Optional[int],
     random_repeat_failure_stops_pair_repeats: bool,
+    interleave_smaller_noncustom_with_custom: bool = False,
 ) -> int:
     excluded_runs = 0
+    if interleave_smaller_noncustom_with_custom and not custom_levels_run_last:
+        if row.phase == "custom":
+            state.custom_index += 1
+            if is_failure_status(row.status):
+                state.custom_fail_streak += 1
+            else:
+                state.custom_fail_streak = 0
+            if state.custom_fail_streak >= custom_fail_limit:
+                excluded_runs += max(0, custom_levels_count - state.custom_index)
+                state.custom_index = custom_levels_count
+        elif row.phase == "random-repeat":
+            state.random_repeat_index += 1
+            if random_repeat_failure_stops_pair_repeats and is_failure_status(row.status):
+                excluded_runs += max(0, random_repeat_levels_count - state.random_repeat_index)
+                state.random_repeat_index = random_repeat_levels_count
+        elif row.phase == "growth":
+            if not is_failure_status(row.status):
+                state.growth_max_nonfailure_size = max(
+                    state.growth_max_nonfailure_size,
+                    min(row.rows, row.cols),
+                )
+            state.growth_index += 1
+            if growth_stop_on_failure and is_failure_status(row.status):
+                excluded_runs += max(0, growth_levels_count - state.growth_index)
+                state.growth_index = growth_levels_count
+
+        state.done = (
+            state.custom_index >= custom_levels_count
+            and state.random_repeat_index >= random_repeat_levels_count
+            and state.growth_index >= growth_levels_count
+        )
+        return excluded_runs
+
     if row.phase == "custom":
         state.custom_index += 1
         if is_failure_status(row.status):
@@ -1647,10 +1759,17 @@ def remaining_base_runs_for_state(
     growth_levels_count: int,
     custom_levels_run_last: bool,
     custom_levels_require_growth_past_size: Optional[int],
+    interleave_smaller_noncustom_with_custom: bool = False,
 ) -> int:
     if state.done:
         return 0
     remaining = 0
+    if interleave_smaller_noncustom_with_custom and not custom_levels_run_last:
+        remaining += max(0, custom_levels_count - state.custom_index)
+        remaining += max(0, random_repeat_levels_count - state.random_repeat_index)
+        remaining += max(0, growth_levels_count - state.growth_index)
+        return remaining
+
     if custom_levels_run_last:
         if state.phase == "random-repeat":
             remaining += max(0, random_repeat_levels_count - state.random_repeat_index)
@@ -1840,6 +1959,33 @@ def main() -> int:
     )
     if custom_levels_require_growth_past_size is not None:
         custom_levels_run_last = True
+    interleave_smaller_noncustom_with_custom = bool(
+        cfg.get("interleave_smaller_noncustom_with_custom", False)
+    )
+    only_smaller_while_custom_running = bool(
+        cfg.get("only_smaller_while_custom_running", False)
+    )
+    noncustom_percent_smaller_than_custom = float(
+        cfg.get("noncustom_percent_smaller_than_custom", 0.0)
+    )
+    noncustom_max_cells_while_custom_running = parse_cells_threshold(
+        cfg.get("noncustom_max_size_while_custom_running"),
+        field_name="noncustom_max_size_while_custom_running",
+    )
+    if noncustom_percent_smaller_than_custom < 0 or noncustom_percent_smaller_than_custom >= 100:
+        print(
+            "[ERR] noncustom_percent_smaller_than_custom must be >= 0 and < 100.",
+            file=sys.stderr,
+        )
+        return 2
+    if only_smaller_while_custom_running:
+        interleave_smaller_noncustom_with_custom = True
+    if custom_levels_run_last and interleave_smaller_noncustom_with_custom:
+        print(
+            "[WARN] interleave_smaller_noncustom_with_custom is ignored when custom_levels_run_last=true."
+        )
+        interleave_smaller_noncustom_with_custom = False
+        only_smaller_while_custom_running = False
     random_repeat_failure_stops_pair_repeats = bool(
         cfg.get(
             "stop_remaining_random_repeats_for_pair_on_failure",
@@ -1904,6 +2050,11 @@ def main() -> int:
             print("[ERR] --jobs must be > 0.", file=sys.stderr)
             return 2
         max_parallel = min(args.jobs, 12)
+    max_parallel_custom_runs = int(cfg.get("max_parallel_custom_runs", max_parallel))
+    if max_parallel_custom_runs <= 0:
+        print("[ERR] max_parallel_custom_runs must be > 0.", file=sys.stderr)
+        return 2
+    max_parallel_custom_runs = min(max_parallel_custom_runs, max_parallel)
 
     if any(s.stream for s in settings) and max_parallel > 1 and not args.dry_run:
         print("[WARN] stream=true with parallel runs can interleave logs.")
@@ -1913,6 +2064,7 @@ def main() -> int:
     max_matrix_runs = len(pairings) * (
         len(custom_levels) + len(random_repeat_levels) + len(growth_levels)
     )
+    max_matrix_runs_with_repeats_upper = max_matrix_runs * (1 + repeat_successful_runs)
     n_classic = sum(d.kind == "classic" for d in domains)
     n_fa = sum(d.kind == "fa" for d in domains)
     n_plus = sum(d.kind == "plus" for d in domains)
@@ -1924,6 +2076,7 @@ def main() -> int:
     print(f"[INFO] Random repeat levels: {len(random_repeat_levels)}")
     print(f"[INFO] Growth levels: {len(growth_levels)}")
     print(f"[INFO] Max matrix runs (upper bound): {max_matrix_runs}")
+    print(f"[INFO] Max matrix runs incl repeats (upper bound): {max_matrix_runs_with_repeats_upper}")
     print(f"[INFO] Repeat solved instances: {repeat_successful_runs}")
     print(f"[INFO] Custom levels run last: {custom_levels_run_last}")
     print(
@@ -1935,6 +2088,23 @@ def main() -> int:
         f"{random_repeat_failure_stops_pair_repeats}"
     )
     print(f"[INFO] Max parallel runs: {max_parallel} (QoS: equal thread priority)")
+    print(f"[INFO] Max parallel custom runs: {max_parallel_custom_runs}")
+    print(
+        "[INFO] Interleave smaller non-custom tasks with custom tasks: "
+        f"{interleave_smaller_noncustom_with_custom}"
+    )
+    print(
+        "[INFO] Only smaller instances while a custom task is running: "
+        f"{only_smaller_while_custom_running}"
+    )
+    print(
+        "[INFO] Non-custom percent smaller than active custom level: "
+        f"{noncustom_percent_smaller_than_custom:g}"
+    )
+    print(
+        "[INFO] Non-custom max size while a custom task is running (cells): "
+        f"{noncustom_max_cells_while_custom_running if noncustom_max_cells_while_custom_running is not None else 'disabled'}"
+    )
     print(f"[INFO] Random seed: {seed}")
     print(f"[INFO] Dry run: {args.dry_run}")
     print(f"[INFO] Run dir: {run_dir}")
@@ -1961,8 +2131,9 @@ def main() -> int:
     rows: List[BenchRow] = []
     run_counter = 0
     completed = 0
+    base_runs_completed = 0
+    base_runs_solved = 0
     excluded_base_runs = 0
-    planned_repeat_runs_total = 0
 
     run_meta = {
         "config_path": str(config_path),
@@ -1978,6 +2149,11 @@ def main() -> int:
         "stop_remaining_random_repeats_for_pair_on_failure": random_repeat_failure_stops_pair_repeats,
         "terminate_run_on_random_repeat_failure": random_repeat_failure_stops_pair_repeats,
         "repeat_successful_runs": repeat_successful_runs,
+        "max_parallel_custom_runs": max_parallel_custom_runs,
+        "interleave_smaller_noncustom_with_custom": interleave_smaller_noncustom_with_custom,
+        "only_smaller_while_custom_running": only_smaller_while_custom_running,
+        "noncustom_percent_smaller_than_custom": noncustom_percent_smaller_than_custom,
+        "noncustom_max_size_while_custom_running": noncustom_max_cells_while_custom_running,
         "domains": [str(d.path) for d in domains],
         "settings": [asdict(s) | {"enhsp_jar": str(s.enhsp_jar) if s.enhsp_jar else None, "optic_bin": str(s.optic_bin) if s.optic_bin else None, "problem_gen": str(s.problem_gen) if s.problem_gen else None} for s in settings],
         "custom_levels": [str(l.path) for l in custom_levels],
@@ -2014,32 +2190,80 @@ def main() -> int:
 
     base_max_runs = max_matrix_runs
 
+    def effective_base_runs_total() -> int:
+        # Include runs marked for exclusion but not yet applied to the global counter.
+        pending_exclusions = sum(st.pending_excluded_runs for st in states.values())
+        return max(0, base_max_runs - excluded_base_runs - pending_exclusions)
+
+    def progress_totals() -> Tuple[int, int]:
+        base_effective_total = effective_base_runs_total()
+        unresolved_base_runs = max(0, base_effective_total - base_runs_completed)
+        # Project repeats for solved base runs plus unresolved base runs that may still solve.
+        projected_repeat_runs = (base_runs_solved + unresolved_base_runs) * repeat_successful_runs
+        total_effective_runs = max(completed, base_effective_total + projected_repeat_runs)
+        remaining_instances = max(0, total_effective_runs - completed)
+        return total_effective_runs, remaining_instances
+
     def estimate_remaining_timeout_sec(
         future_to_ctx: Dict[concurrent.futures.Future[TaskResult], Tuple[str, RunTask]],
     ) -> float:
         timeout_sum = 0.0
         for _pid, running_task in future_to_ctx.values():
             timeout_sum += float(running_task.setting.timeout_sec)
+            if running_task.repeat_index == 0:
+                timeout_sum += float(repeat_successful_runs * running_task.setting.timeout_sec)
         for pid, st in states.items():
             timeout_sum += float(len(repeat_queues[pid]) * st.pairing.setting.timeout_sec)
+            base_runs_left = remaining_base_runs_for_state(
+                st,
+                custom_levels_count=len(custom_levels),
+                random_repeat_levels_count=len(random_repeat_levels),
+                growth_levels_count=len(growth_levels),
+                custom_levels_run_last=custom_levels_run_last,
+                custom_levels_require_growth_past_size=custom_levels_require_growth_past_size,
+                interleave_smaller_noncustom_with_custom=interleave_smaller_noncustom_with_custom,
+            )
+            timeout_sum += float(base_runs_left * st.pairing.setting.timeout_sec)
             timeout_sum += float(
-                remaining_base_runs_for_state(
-                    st,
-                    custom_levels_count=len(custom_levels),
-                    random_repeat_levels_count=len(random_repeat_levels),
-                    growth_levels_count=len(growth_levels),
-                    custom_levels_run_last=custom_levels_run_last,
-                    custom_levels_require_growth_past_size=custom_levels_require_growth_past_size,
-                )
-                * st.pairing.setting.timeout_sec
+                base_runs_left * repeat_successful_runs * st.pairing.setting.timeout_sec
             )
         return timeout_sum
+
+    def active_custom_dispatch_state(
+        future_to_ctx: Dict[concurrent.futures.Future[TaskResult], Tuple[str, RunTask]],
+    ) -> Tuple[int, Optional[int]]:
+        custom_cells = [
+            task.level.cells for _pid, task in future_to_ctx.values() if task.phase == "custom"
+        ]
+        if not custom_cells:
+            return 0, None
+        return len(custom_cells), min(custom_cells)
+
+    def task_allowed_by_custom_policy(
+        task: RunTask,
+        *,
+        active_custom_runs: int,
+        active_custom_min_cells: Optional[int],
+    ) -> bool:
+        if task.phase == "custom":
+            return active_custom_runs < max_parallel_custom_runs
+        if active_custom_min_cells is not None:
+            if noncustom_max_cells_while_custom_running is not None:
+                if task.level.cells > noncustom_max_cells_while_custom_running:
+                    return False
+            if only_smaller_while_custom_running:
+                max_cells_exclusive = active_custom_min_cells * (
+                    1.0 - (noncustom_percent_smaller_than_custom / 100.0)
+                )
+                return task.level.cells < max_cells_exclusive
+        return True
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as ex:
             future_to_ctx: Dict[concurrent.futures.Future[TaskResult], Tuple[str, RunTask]] = {}
 
             while True:
+                blocked_ready: List[str] = []
                 while (not stop_requested) and len(future_to_ctx) < max_parallel and ready:
                     rng.shuffle(ready)
                     pid = ready.pop()
@@ -2048,26 +2272,64 @@ def main() -> int:
                         continue
 
                     task: Optional[RunTask] = None
+                    active_custom_runs, active_custom_min_cells = active_custom_dispatch_state(
+                        future_to_ctx
+                    )
                     if repeat_queues[pid]:
-                        task = repeat_queues[pid].pop(0)
+                        queued_task = repeat_queues[pid][0]
+                        if task_allowed_by_custom_policy(
+                            queued_task,
+                            active_custom_runs=active_custom_runs,
+                            active_custom_min_cells=active_custom_min_cells,
+                        ):
+                            task = repeat_queues[pid].pop(0)
+                        else:
+                            blocked_ready.append(pid)
+                            continue
                     elif not st.done:
-                        run_counter += 1
                         task = next_task_for_state(
                             st,
                             custom_levels=custom_levels,
                             random_repeat_levels=random_repeat_levels,
                             growth_levels=growth_levels,
-                            run_id=run_counter,
+                            run_id=run_counter + 1,
                             custom_levels_run_last=custom_levels_run_last,
                             custom_levels_require_growth_past_size=custom_levels_require_growth_past_size,
+                            interleave_smaller_noncustom_with_custom=interleave_smaller_noncustom_with_custom,
+                            max_parallel_custom_runs=max_parallel_custom_runs,
+                            active_custom_runs=active_custom_runs,
+                            active_custom_min_cells=active_custom_min_cells,
+                            only_smaller_while_custom_running=only_smaller_while_custom_running,
+                            noncustom_percent_smaller_than_custom=noncustom_percent_smaller_than_custom,
+                            noncustom_max_cells_while_custom_running=noncustom_max_cells_while_custom_running,
                         )
                     if task is None:
+                        if remaining_base_runs_for_state(
+                            st,
+                            custom_levels_count=len(custom_levels),
+                            random_repeat_levels_count=len(random_repeat_levels),
+                            growth_levels_count=len(growth_levels),
+                            custom_levels_run_last=custom_levels_run_last,
+                            custom_levels_require_growth_past_size=custom_levels_require_growth_past_size,
+                            interleave_smaller_noncustom_with_custom=interleave_smaller_noncustom_with_custom,
+                        ) > 0:
+                            blocked_ready.append(pid)
+                            continue
                         if st.pending_excluded_runs > 0:
                             excluded_base_runs += st.pending_excluded_runs
                             st.pending_excluded_runs = 0
                         st.done = True
                         continue
+                    if not task_allowed_by_custom_policy(
+                        task,
+                        active_custom_runs=active_custom_runs,
+                        active_custom_min_cells=active_custom_min_cells,
+                    ):
+                        blocked_ready.append(pid)
+                        continue
 
+                    if not repeat_queues[pid] or task.repeat_index == 0:
+                        run_counter = max(run_counter, task.run_id)
                     st.in_flight = True
                     fut = ex.submit(
                         run_single_task,
@@ -2076,6 +2338,8 @@ def main() -> int:
                         dry_run=args.dry_run,
                     )
                     future_to_ctx[fut] = (pid, task)
+                if blocked_ready:
+                    ready.extend(blocked_ready)
 
                 if not future_to_ctx:
                     break
@@ -2192,6 +2456,9 @@ def main() -> int:
                         )
 
                     if completed_task.repeat_index == 0:
+                        base_runs_completed += 1
+                        if is_success_status(row.status):
+                            base_runs_solved += 1
                         excluded_base_runs += advance_state_after_result(
                             st,
                             row=row,
@@ -2203,6 +2470,7 @@ def main() -> int:
                             custom_levels_run_last=custom_levels_run_last,
                             custom_levels_require_growth_past_size=custom_levels_require_growth_past_size,
                             random_repeat_failure_stops_pair_repeats=random_repeat_failure_stops_pair_repeats,
+                            interleave_smaller_noncustom_with_custom=interleave_smaller_noncustom_with_custom,
                         )
                         if repeat_successful_runs > 0 and is_success_status(row.status):
                             for rep_idx in range(1, repeat_successful_runs + 1):
@@ -2218,16 +2486,11 @@ def main() -> int:
                                         repeat_index=rep_idx,
                                     )
                                 )
-                            planned_repeat_runs_total += repeat_successful_runs
 
                     if repeat_queues[pid] or not st.done:
                         ready.append(pid)
 
-                    total_effective_runs = max(
-                        completed,
-                        max(0, base_max_runs - excluded_base_runs) + planned_repeat_runs_total,
-                    )
-                    remaining_instances = max(0, total_effective_runs - completed)
+                    total_effective_runs, remaining_instances = progress_totals()
                     remaining_timeout_sec = estimate_remaining_timeout_sec(future_to_ctx)
                     eta_parallel_upper_sec = remaining_timeout_sec / max(1, max_parallel)
                     print(

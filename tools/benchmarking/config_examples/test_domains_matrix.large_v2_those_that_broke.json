@@ -1,0 +1,105 @@
+{
+  "timeout_sec": 300,
+  "max_parallel_runs": 6,
+  "random_seed": 1337,
+  "domains_glob": "pddl/test_domains/domain*.pddl",
+  "custom_fail_streak_limit": 3,
+  "repeat_successful_runs": 0,
+  "growth_stop_on_failure": true,
+  "stop_remaining_random_repeats_for_pair_on_failure": true,
+  "max_parallel_custom_runs": 1,
+  "interleave_smaller_noncustom_with_custom": true,
+  "only_smaller_while_custom_running": true,
+  "noncustom_percent_smaller_than_custom": 25,
+  "noncustom_max_size_while_custom_running": "7x7",
+  "custom_levels": [
+    "pddl/level_reduce.txt",
+    "pddl/level.txt"
+  ],
+  "growth": {
+    "enabled": true,
+    "start_size": 4,
+    "max_size": 30,
+    "size_step": 1,
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "random_repeats": {
+    "enabled": false,
+    "sizes": ["5x5"],
+    "repeats_per_size": 10,
+    "stone_counts": [1, 2, 4, 4, 4, 8, 8, 8, 8, 8],
+    "stone_count_mode": "cycle",
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "planner_settings": [
+    {
+      "name": "fd-lazy-greedy-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy_greedy([h],preferred=[h]))"
+    },
+    {
+      "name": "fd-lazy-greedy-ff-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search \"let(hff, ff(), lazy_greedy([hff], preferred=[hff]))\""
+    },
+    {
+      "name": "fd-lazy-greedy-cea-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search \"let(hcea, cea(), lazy_greedy([hcea], preferred=[hcea]))\""
+    },
+    {
+      "name": "fd-lazy-greedy-ff-cea-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search \"let(hff, ff(), let(hcea, cea(), lazy_greedy([hff, hcea], preferred=[hff, hcea])))\""
+    },
+    {
+      "name": "fd-astar-blind-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search \"astar(blind())\""
+    },
+    {
+      "name": "fd-astar-hmax-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search \"astar(hmax())\""
+    },
+    {
+      "name": "fd-lazy-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy(single(h),preferred=[h]))"
+    },
+    {
+      "name": "fd-lazy-greedy-ff-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search \"let(hff, ff(), lazy_greedy([hff], preferred=[hff]))\""
+    },
+    {
+      "name": "fd-lazy-greedy-cea-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search \"let(hcea, cea(), lazy_greedy([hcea], preferred=[hcea]))\""
+    },
+    {
+      "name": "fd-lazy-greedy-ff-cea-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search \"let(hff, ff(), let(hcea, cea(), lazy_greedy([hff, hcea], preferred=[hff, hcea])))\""
+    },
+    {
+      "name": "enhsp-gbfs-blind-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s gbfs -h blind"
+    }  ]
+}

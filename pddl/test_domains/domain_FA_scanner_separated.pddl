@@ -47,7 +47,7 @@
     ;; high-level state
     (agent-alive)
     (got-gem)
-    (crushed)
+    (agent-crushed)
 
     (can_fall)
     (can_roll_left)

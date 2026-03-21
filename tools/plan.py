@@ -192,9 +192,12 @@ def write_direction_plan(path: Path, actions: List[Tuple[str, List[str]]]) -> No
     """
     Write a plan in the simple token format that plan_player understands.
     Looks for actions with coordinates like c_r_c and converts to up/down/left/right.
+    Ignores end_tick, physics_on_bottom, and physics_agent_noop actions.
     """
     tokens: List[str] = []
     for name, args in actions:
+        if name in ["end_tick", "physics_on_bottom", "physics_agent_noop"]:
+            continue
         if name.lower()[0:2] == "fa" or "__forced__" in name.lower():
             continue
         if len(args) >= 3:

@@ -31,6 +31,11 @@ SOURCE_TO_KIND = {
 }
 
 SCANNER_CHAIN_PREDICATES = ("first-cell", "next-cell", "last-cell")
+OPTIONAL_DOMAIN_PREDICATES = ("update-required", "crushed")
+PREDICATE_COMPAT_RENAMES = (
+    ("update-required", "tick-active"),
+    ("crushed", "agent-crushed"),
+)
 
 
 def _read_level(level_input: str) -> str:
@@ -74,6 +79,27 @@ def _strip_scanner_chain_facts(problem_pddl: str) -> str:
     if not out_lines:
         return ""
     return "\n".join(out_lines) + "\n"
+
+
+def _strip_predicate_facts(problem_pddl: str, predicate: str) -> str:
+    out_lines = []
+    # Remove both positive and negated literals, e.g.:
+    #   (update-required)
+    #   (not (update-required))
+    pattern = re.compile(rf"\(\s*(?:not\s+\(\s*)?{re.escape(predicate)}\b")
+    for line in problem_pddl.splitlines():
+        if pattern.search(line):
+            continue
+        out_lines.append(line)
+    if not out_lines:
+        return ""
+    return "\n".join(out_lines) + "\n"
+
+
+def _rename_predicate_facts(problem_pddl: str, src_predicate: str, dst_predicate: str) -> str:
+    # Handles both positive and negated atoms by replacing predicate heads.
+    pattern = re.compile(rf"(\(\s*(?:not\s+\(\s*)?){re.escape(src_predicate)}(\b)")
+    return pattern.sub(rf"\1{dst_predicate}\2", problem_pddl)
 
 
 def _generate(kind: str, level_str: str, problem_name: str, domain_name: str, agent_name: str) -> str:
@@ -142,6 +168,15 @@ def main_for_domain_file(domain_filename: str) -> int:
             for pred in SCANNER_CHAIN_PREDICATES
         ):
             pddl = _strip_scanner_chain_facts(pddl)
+        for src_pred, dst_pred in PREDICATE_COMPAT_RENAMES:
+            if (
+                not _domain_declares_predicate(domain_text, src_pred)
+                and _domain_declares_predicate(domain_text, dst_pred)
+            ):
+                pddl = _rename_predicate_facts(pddl, src_pred, dst_pred)
+        for pred in OPTIONAL_DOMAIN_PREDICATES:
+            if not _domain_declares_predicate(domain_text, pred):
+                pddl = _strip_predicate_facts(pddl, pred)
     except Exception as exc:
         sys.stderr.write(f"Error: {exc}\n")
         return 1

@@ -35,9 +35,9 @@
     ;; high-level state
     (agent-alive)
     (got-gem)
-    (crushed)
+    (agent-crushed)
 
-    (update-required)
+    (tick-active)
     (updated ?c - cell)
     (pending ?c - real-cell)
 
@@ -50,10 +50,10 @@
   ; (:action move_noop
   ;   :parameters ()
   ;   :precondition (and (agent-alive)
-  ;     (not (update-required))
+  ;     (not (tick-active))
   ;   )
   ;   :effect (and
-  ;     (update-required)
+  ;     (tick-active)
   ;     (increase (total-cost) 1)
   ;     (forall (?cc - real-cell) (when (or (stone ?cc) (gem ?cc)) (and (pending ?cc))))
   ;   )
@@ -68,7 +68,7 @@
         (right-of ?to ?from)
         (right-of ?from ?to))
       (empty ?to)
-      (not (update-required))
+      (not (tick-active))
     )
     :effect (and
       (not (agent-at ?from))
@@ -77,7 +77,7 @@
       (empty ?from)
       (not (empty ?to))
 
-      (update-required)
+      (tick-active)
       (increase (total-cost) 1)
       (forall (?cc - real-cell) (when (or (stone ?cc) (gem ?cc)) (and (pending ?cc))))
 
@@ -93,7 +93,7 @@
         (right-of ?to ?from)
         (right-of ?from ?to))
       (dirt ?to)
-      (not (update-required))
+      (not (tick-active))
     )
     :effect (and
       (not (agent-at ?from))
@@ -104,7 +104,7 @@
       (empty ?from)
       (not (empty ?to))
 
-      (update-required)
+      (tick-active)
       (forall (?cc - real-cell) (when (or (stone ?cc) (gem ?cc)) (and (pending ?cc))))
       (increase (total-cost) 1)
     )
@@ -120,7 +120,7 @@
         (right-of ?to ?from)
         (right-of ?from ?to))
       (gem ?to)
-      (not (update-required))
+      (not (tick-active))
     )
     :effect (and
       (not (agent-at ?from))
@@ -133,7 +133,7 @@
       (not (falling ?to))
 
       (got-gem)
-      (update-required)
+      (tick-active)
       (forall (?cc - real-cell) (when (or (stone ?cc) (gem ?cc)) (and (pending ?cc))))
       (increase (total-cost) 1)
     )
@@ -152,7 +152,7 @@
       (stone ?to)
       (empty ?stone_dest)
       (not (falling ?to))
-      (not (update-required))
+      (not (tick-active))
     )
     :effect (and
       (not (agent-at ?from))
@@ -168,7 +168,7 @@
       (not (falling ?stone_dest))
 
       (updated ?to)
-      (update-required)
+      (tick-active)
       (forall (?cc - real-cell) (when (or (stone ?cc) (gem ?cc)) (and (pending ?cc))))
       (increase (total-cost) 1)
 
@@ -182,7 +182,7 @@
   (:action __FORCED__physics_fall_on_agent
       :parameters (?c ?down - real-cell)
       :precondition (and 
-        (update-required)
+        (tick-active)
         (pending ?c)
         (down ?c ?down)
 
@@ -195,7 +195,7 @@
       )
       :effect (and
         (not (agent-alive))
-        (crushed)
+        (agent-crushed)
 
         (updated ?c)
         (not (falling ?c))
@@ -212,7 +212,7 @@
   (:action __FORCED__physics_stone_fall
     :parameters (?c ?down - real-cell)
     :precondition (and
-      (update-required)
+      (tick-active)
 
       (down ?c ?down)
       (stone ?c)
@@ -244,7 +244,7 @@
   (:action __FORCED__physics_gem_fall
     :parameters (?c ?down - real-cell)
     :precondition (and
-      (update-required)
+      (tick-active)
       
       (down ?c ?down)
       (gem ?c)
@@ -273,7 +273,7 @@
   (:action __FORCED__physics_stone_on_dirt
     :parameters (?c ?down - real-cell)
     :precondition (and
-      (update-required)
+      (tick-active)
       (down ?c ?down)
       (stone ?c)
       (or (dirt ?down))
@@ -291,7 +291,7 @@
   (:action __FORCED__physics_gem_on_dirt
     :parameters (?c ?down - real-cell)
     :precondition (and
-      (update-required)
+      (tick-active)
       (down ?c ?down)
       (gem ?c)
       (or (dirt ?down))
@@ -310,7 +310,7 @@
   (:action __FORCED__physics_on_bottom
     :parameters (?c - real-cell ?down - border-cell)
     :precondition (and
-      (update-required)
+      (tick-active)
       (down ?c ?down)
 
       (or (stone ?c) (gem ?c))
@@ -332,7 +332,7 @@
     :parameters (?c - real-cell ?left ?down_left ?down ?up_left ?danger_cell - cell)
 
     :precondition (and
-      (update-required)
+      (tick-active)
       (right-of ?danger_cell ?left)
       (right-of ?left ?c)
 
@@ -346,7 +346,6 @@
       (stone ?c)
       (not (updated ?c))
 
-      (not (agent-at ?down))
       (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
       (not (falling ?down))
       (not (was_falling ?down))
@@ -383,7 +382,7 @@
     :parameters (?c - real-cell ?left ?down_left ?down ?up_left ?danger_cell - cell)
 
     :precondition (and
-      (update-required)
+      (tick-active)
       (right-of ?danger_cell ?left)
       (right-of ?left ?c)
 
@@ -397,8 +396,6 @@
       (gem ?c)
       (not (updated ?c))
       
-      (not (agent-at ?down))
-
       (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
       (not (falling ?down))
       (not (was_falling ?down))
@@ -434,7 +431,7 @@
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right ?left_danger - cell)
 
     :precondition (and
-      (update-required)
+      (tick-active)
       (right-of ?left ?c)
       (right-of ?c ?right)
       (right-of ?left_danger ?left)
@@ -452,7 +449,6 @@
       (stone ?c)
       (not (updated ?c))
 
-      (not (agent-at ?down))
       (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
       (not (falling ?down))
       (not (was_falling ?down))
@@ -497,7 +493,7 @@
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right ?left_danger - cell)
 
     :precondition (and
-      (update-required)
+      (tick-active)
       (right-of ?left ?c)
       (right-of ?c ?right)
       (right-of ?left_danger ?left)
@@ -516,7 +512,6 @@
       (not (updated ?c))
 
       (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
-      (not (agent-at ?down))
       (not (falling ?down))
       (not (was_falling ?down))
 
@@ -561,7 +556,7 @@
   (:action __FORCED__physics_on_agent
       :parameters (?c ?down - real-cell)
       :precondition (and 
-        (update-required)
+        (tick-active)
         (pending ?c)
         (down ?c ?down)
 
@@ -581,7 +576,7 @@
   (:action __FORCED__physics_stone_noop
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right ?left_danger - cell)
     :precondition (and
-      (update-required)
+      (tick-active)
       (stone ?c)
 
       (right-of ?left ?c)
@@ -613,9 +608,6 @@
         (and (gem ?up_left) (not (updated ?up_left)))
         (and (stone ?left_danger) (not (updated ?left_danger)))
         (and (gem ?left_danger) (not (updated ?left_danger)))
-        (agent-at ?down)
-        (agent-at ?left)
-        (agent-at ?down_left)
       )
       ;; no roll right
       (or
@@ -627,9 +619,6 @@
         (and (not (empty ?down_right)) (not (was_empty ?down_right)))
         (and (stone ?up_right) (not (updated ?up_right)))
         (and (gem ?up_right) (not (updated ?up_right)))
-        (agent-at ?down)
-        (agent-at ?right)
-        (agent-at ?down_right)
         )
 
       (or (and (not (stone ?left_danger)) (not (gem ?left_danger))) (updated ?left_danger))
@@ -649,7 +638,7 @@
   (:action __FORCED__physics_on_falling_noop
     :parameters (?c - real-cell ?down - cell)
     :precondition (and
-      (update-required)
+      (tick-active)
       (down ?c ?down)
 
       (or (stone ?c) (gem ?c))
@@ -671,7 +660,7 @@
   (:action __FORCED__physics_gem_noop
     :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right ?left_danger - cell)
     :precondition (and
-      (update-required)
+      (tick-active)
       (gem ?c)
 
       (right-of ?left ?c)
@@ -731,7 +720,7 @@
   (:action __FORCED__physics_agent_noop
     :parameters (?c - real-cell)
     :precondition (and
-      (update-required)
+      (tick-active)
       (agent-at ?c)
     )
     :effect (and
@@ -747,7 +736,7 @@
   (:action __FORCED__end_tick
     :parameters ()
     :precondition (and
-      (update-required)
+      (tick-active)
       (forall
         (?c - real-cell)
         (and
@@ -759,7 +748,7 @@
       (forall
         (?c - real-cell)
         (and (not (updated ?c)) (not (pending ?c)) (not (was_empty ?c)) (not (was_falling ?c))))
-      (not (update-required))
+      (not (tick-active))
     )
   )
 )
