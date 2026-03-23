@@ -308,6 +308,7 @@ class PairState:
     growth_max_nonfailure_size: int
     pending_excluded_runs: int
     non_growth_in_flight: bool
+    custom_in_flight: int
     growth_in_flight: int
     growth_blocked: bool
     growth_max_allowed_size_index: Optional[int]
@@ -2369,7 +2370,6 @@ def advance_state_after_result(
 ) -> int:
     excluded_runs = 0
     if row.phase == "custom":
-        state.custom_index += 1
         if is_failure_status(row.status):
             state.custom_fail_streak += 1
         else:
@@ -2854,6 +2854,7 @@ def main() -> int:
             growth_max_nonfailure_size=0,
             pending_excluded_runs=0,
             non_growth_in_flight=False,
+            custom_in_flight=0,
             growth_in_flight=0,
             growth_blocked=False,
             growth_max_allowed_size_index=None,
@@ -3015,8 +3016,29 @@ def main() -> int:
 
     def state_can_start_task(state: PairState, task: RunTask) -> bool:
         if task.phase == "growth":
-            return state.growth_in_flight < growth_parallel_per_pair
+            if state.custom_in_flight > 0 and not interleave_smaller_noncustom_with_custom:
+                return False
+            return state.growth_in_flight < growth_parallel_per_pair and not state.non_growth_in_flight
+        if task.phase == "custom":
+            return not state.non_growth_in_flight and state.growth_in_flight == 0
+        if state.custom_in_flight > 0:
+            return (
+                interleave_smaller_noncustom_with_custom
+                and not state.non_growth_in_flight
+                and state.growth_in_flight == 0
+            )
         return not state.non_growth_in_flight and state.growth_in_flight == 0
+
+    def reserve_state_for_task(state: PairState, task: RunTask) -> None:
+        if task.phase == "growth":
+            growth_manager.reserve_task(state, task)
+            return
+        if task.phase == "custom":
+            if task.repeat_index == 0:
+                state.custom_index += 1
+            state.custom_in_flight += 1
+            return
+        state.non_growth_in_flight = True
 
     def next_drain_task_for_state(
         state: PairState,
@@ -3139,10 +3161,7 @@ def main() -> int:
 
                     if not repeat_queues[pid] or task.repeat_index == 0:
                         run_counter = max(run_counter, task.run_id)
-                    if task.phase == "growth":
-                        growth_manager.reserve_task(st, task)
-                    else:
-                        st.non_growth_in_flight = True
+                    reserve_state_for_task(st, task)
                     fut = ex.submit(
                         run_single_task,
                         task,
@@ -3153,6 +3172,8 @@ def main() -> int:
                     if task.phase == "growth" and (repeat_queues[pid] or not st.done):
                         if st.growth_in_flight < growth_parallel_per_pair:
                             ready.append(pid)
+                    elif task.phase == "custom" and (repeat_queues[pid] or not st.done):
+                        ready.append(pid)
                 if blocked_ready:
                     ready.extend(blocked_ready)
 
@@ -3256,7 +3277,10 @@ def main() -> int:
                     if completed_task.phase == "growth":
                         growth_completion = growth_manager.complete_task(st, completed_task, row)
                     else:
-                        st.non_growth_in_flight = False
+                        if completed_task.phase == "custom":
+                            st.custom_in_flight = max(0, st.custom_in_flight - 1)
+                        else:
+                            st.non_growth_in_flight = False
                         growth_completion = GrowthCompletion(counts_toward_progress=(completed_task.repeat_index == 0))
 
                     rows.append(row)
