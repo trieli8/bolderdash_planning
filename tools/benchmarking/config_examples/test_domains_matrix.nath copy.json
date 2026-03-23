@@ -1,0 +1,23 @@
+{
+  "timeout_sec": 300,
+  "max_parallel_runs": 6,
+  "random_seed": 1337,
+  "domains_glob": "pddl/test_domains/domain*.pddl",
+  "custom_fail_streak_limit": 3,
+  "repeat_successful_runs": 0,
+  "growth_stop_on_failure": true,
+  "stop_remaining_random_repeats_for_pair_on_failure": true,
+  "max_parallel_custom_runs": 2,
+  "interleave_smaller_noncustom_with_custom": true,
+  "only_smaller_while_custom_running": true,
+
+  "planner_settings": [
+    {
+      "name": "fd-lazy-greedy-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy_greedy([h],preferred=[h]))",
+      "domain_include": ["*domain_FA_scanner_separated.pddl"]
+    }
+   ]
+}

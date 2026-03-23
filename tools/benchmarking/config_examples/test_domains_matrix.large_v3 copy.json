@@ -1,0 +1,93 @@
+{
+  "timeout_sec": 300,
+  "max_parallel_runs": 6,
+  "random_seed": 1337,
+  "domains_glob": "pddl/test_domains/domain*.pddl",
+  "custom_fail_streak_limit": 3,
+  "repeat_successful_runs": 0,
+  "growth_stop_on_failure": true,
+  "growth": {
+    "enabled": true,
+    "start_size": 4,
+    "max_size": 30,
+    "size_step": 1,
+    "min_variants_per_size": 5,
+    "continuous_after_minimum": true,
+    "parallel_sizes_ahead": 2,
+    "max_parallel_per_pair": 3,
+    "standard_timeout_sec": 300,
+    "validator_timeout_multiplier": 1.5,
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "random_repeats": {
+    "enabled": false,
+    "sizes": ["7x7"],
+    "repeats_per_size": 10,
+    "stone_counts": [1, 2, 4, 8, 16, 16, 16, 16, 16, 32],
+    "stone_count_mode": "cycle",
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "planner_settings": [
+    {
+      "name": "fd-lazy-greedy-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy_greedy([h],preferred=[h]))"
+    },
+    {
+      "name": "fd-lazy-greedy-ff-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search \"let(hff, ff(), lazy_greedy([hff], preferred=[hff]))\""
+    },
+    {
+      "name": "fd-lazy-greedy-cea-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search \"let(hcea, cea(), lazy_greedy([hcea], preferred=[hcea]))\""
+    },
+    {
+      "name": "fd-astar-hmax-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search \"astar(hmax())\""
+    },
+    {
+      "name": "fd-lazy-fa",
+      "family": "fa",
+      "planner": "fd",
+      "validator": true,
+      "timeout_sec": 450,
+      "domain_include": ["*domain_FA_non-scanner_separated.pddl"],
+      "planner_args": "--search let(h,ff(),lazy(single(h),preferred=[h]))"
+    },
+    {
+      "name": "fd-lazy-fa",
+      "family": "fa",
+      "planner": "fd",
+      "domain_exclude": ["*domain_FA_non-scanner_separated.pddl"],
+      "planner_args": "--search let(h,ff(),lazy(single(h),preferred=[h]))"
+    },
+    {
+      "name": "fd-lazy-greedy-ff-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search \"let(hff, ff(), lazy_greedy([hff], preferred=[hff]))\""
+    },
+    {
+      "name": "fd-lazy-greedy-cea-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search \"let(hcea, cea(), lazy_greedy([hcea], preferred=[hcea]))\""
+    },
+    {
+      "name": "enhsp-gbfs-blind-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s gbfs -h blind"
+    }  ]
+}

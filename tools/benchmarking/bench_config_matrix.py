@@ -629,8 +629,15 @@ def discover_domains(
 
 
 def parse_level_size(path: Path) -> Tuple[int, int]:
-    text = path.read_text(encoding="utf-8", errors="replace").strip()
-    parts = [p.strip() for p in text.split("|") if p.strip()]
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    header_line = ""
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith(";"):
+            continue
+        header_line = stripped
+        break
+    parts = [p.strip() for p in header_line.split("|") if p.strip()]
     if len(parts) < 2:
         raise ValueError(f"Could not parse rows/cols from level: {path}")
     rows = int(parts[0])
@@ -646,11 +653,29 @@ def collect_custom_levels(
     raw = config.get("custom_levels") or []
     if not isinstance(raw, list):
         raise ValueError("config.custom_levels must be a list.")
+    paths = [resolve_path(str(entry), config_dir=config_dir) for entry in raw]
+
+    glob_pattern_raw = config.get("custom_levels_glob")
+    if glob_pattern_raw is not None:
+        if not isinstance(glob_pattern_raw, str) or not glob_pattern_raw.strip():
+            raise ValueError(
+                "config.custom_levels_glob must be a non-empty string when provided."
+            )
+        glob_pattern = glob_pattern_raw.strip()
+        pattern_path = Path(glob_pattern)
+        if pattern_path.is_absolute():
+            matched = sorted(pattern_path.parent.glob(pattern_path.name))
+        else:
+            matched = sorted(repo_root().glob(glob_pattern))
+        if not matched:
+            raise ValueError(
+                f"No custom levels discovered for custom_levels_glob: {glob_pattern}"
+            )
+        paths.extend(matched)
 
     levels: List[LevelInfo] = []
     seen = set()
-    for entry in raw:
-        p = resolve_path(str(entry), config_dir=config_dir)
+    for p in paths:
         if not p.exists():
             raise FileNotFoundError(f"Custom level not found: {p}")
         rp = p.resolve()
