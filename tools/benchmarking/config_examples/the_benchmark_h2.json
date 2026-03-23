@@ -1,5 +1,5 @@
 {
-  "timeout_sec": 900,
+  "timeout_sec": 600,
   "max_parallel_runs": 3,
   "domains_glob": "pddl/test_domains/*.pddl",
   "levels_dir": "pddl/test_problems/h2",
