@@ -35,7 +35,7 @@
   "planner_settings": [
       {
       "name": "fd-lazy-greedy-classic",
-      "family": "classic",
+      "family": "fa",
       "planner": "fd",
       "planner_args": "--search let(h,ff(),lazy_greedy([h],preferred=[h]))",
       "domain_include": ["*domain_FA_scanner_separated.pddl"]
