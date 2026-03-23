@@ -39,6 +39,7 @@
     (dirt ?c - cell)
     (stone ?c - cell)
     (gem ?c - cell)
+    (target-gem ?c - cell)
     (falling ?c - cell)
     (brick ?c - cell)
 
@@ -125,7 +126,7 @@
     )
   )
 
-  ;; Move into gem (collect it -> got-gem)
+  ;; Move into a normal gem.
   (:action move_into_gem
     :parameters (?from ?to ?start - real-cell)
     :precondition (and
@@ -136,6 +137,7 @@
           (right-of ?to ?from)
           (right-of ?from ?to))
       (gem ?to)
+      (not (target-gem ?to))
       (first-cell ?start)
       (not (scan-required))
     )
@@ -147,6 +149,38 @@
       (not (empty ?to))
 
       (not (gem ?to))
+      (not (falling ?to))
+
+      (scan-at ?start)
+      (scan-required)
+      (increase (total-cost) 1)
+    )
+  )
+
+  ;; Move into the distinguished target gem.
+  (:action move_into_target_gem
+    :parameters (?from ?to ?start - real-cell)
+    :precondition (and
+      (agent-alive)
+      (agent-at ?from)
+        (or (up ?from ?to)
+          (down ?from ?to)
+          (right-of ?to ?from)
+          (right-of ?from ?to))
+      (gem ?to)
+      (target-gem ?to)
+      (first-cell ?start)
+      (not (scan-required))
+    )
+    :effect (and
+      (not (agent-at ?from))
+      (agent-at ?to)
+
+      (empty ?from)
+      (not (empty ?to))
+
+      (not (gem ?to))
+      (not (target-gem ?to))
       (not (falling ?to))
 
       (got-gem)

@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+PDDL_DIR = ROOT / "pddl"
+sys.path.insert(0, str(PDDL_DIR))
+
+import problem_gen as base  # type: ignore  # noqa: E402
+import problem_gen_plus_from_domain as plus_gen  # type: ignore  # noqa: E402
+
+SELECTED_LEVELS = (1, 2, 3, 6, 7, 8, 9, 11, 13, 14)
+DEFAULT_DOMAIN_NAME = "mine-tick-gravity-plus-scanner-separated-events"
+
+
+def _load_level_strings(path: Path) -> list[str]:
+    return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _gem_positions(level_str: str) -> list[tuple[int, int]]:
+    rows, cols, _max_time, _required_gems, cell_ids = base.parse_level_string(level_str)
+    positions: list[tuple[int, int]] = []
+    for idx, cell_id in enumerate(cell_ids):
+        if base.classify_cell_id(cell_id) == "gem":
+            positions.append((idx // cols, idx % cols))
+    return positions
+
+
+def _target_only_name(level_index: int, gem_ordinal: int) -> str:
+    return f"bd_level_{level_index:02d}_target_gem_{gem_ordinal:03d}"
+
+
+def _start_target_name(level_index: int, start_gem_ordinal: int, target_gem_ordinal: int) -> str:
+    return (
+        f"bd_level_{level_index:02d}_start_gem_{start_gem_ordinal:03d}"
+        f"_target_gem_{target_gem_ordinal:03d}"
+    )
+
+
+def _metadata_block(
+    *,
+    level_index: int,
+    target_gem_ordinal: int,
+    total_gems: int,
+    start_gem_ordinal: int | None = None,
+) -> str:
+    lines = [f"; source: stonesandgem/bd_levels/bd_levels.txt line {level_index}"]
+    if start_gem_ordinal is not None:
+        lines.append(f"; start-gem-ordinal: {start_gem_ordinal}")
+    lines.append(f"; target-gem-ordinal: {target_gem_ordinal}")
+    lines.append(f"; gem-count: {total_gems}")
+    return "\n".join(lines)
+
+
+def _write_level_file(path: Path, metadata: str, level_str: str) -> None:
+    path.write_text(f"{metadata}\n{level_str.strip()}\n", encoding="utf-8")
+
+
+def generate_selected_problems(
+    levels_path: Path,
+    output_dir: Path,
+    domain_name: str,
+) -> list[str]:
+    level_strings = _load_level_strings(levels_path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for stale in output_dir.glob("bd_level_*.pddl"):
+        stale.unlink()
+    for stale in output_dir.glob("bd_level_*.txt"):
+        stale.unlink()
+
+    written: list[str] = []
+    for level_index in SELECTED_LEVELS:
+        try:
+            level_str = level_strings[level_index - 1]
+        except IndexError as exc:
+            raise ValueError(f"Missing level {level_index} in {levels_path}.") from exc
+
+        gem_positions = _gem_positions(level_str)
+        gem_count = len(gem_positions)
+        for gem_ordinal in range(1, gem_count + 1):
+            stem = _target_only_name(level_index, gem_ordinal)
+            metadata = _metadata_block(
+                level_index=level_index,
+                target_gem_ordinal=gem_ordinal,
+                total_gems=gem_count,
+            )
+            out_path = output_dir / f"{stem}.txt"
+            _write_level_file(out_path, metadata, level_str)
+            written.append(out_path.name)
+
+        if level_index == 1:
+            for start_gem_ordinal in range(1, gem_count + 1):
+                for target_gem_ordinal in range(1, gem_count + 1):
+                    stem = _start_target_name(level_index, start_gem_ordinal, target_gem_ordinal)
+                    metadata = _metadata_block(
+                        level_index=level_index,
+                        start_gem_ordinal=start_gem_ordinal,
+                        target_gem_ordinal=target_gem_ordinal,
+                        total_gems=gem_count,
+                    )
+                    out_path = output_dir / f"{stem}.txt"
+                    _write_level_file(out_path, metadata, level_str)
+                    written.append(out_path.name)
+
+    return written
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(
+        description=(
+            "Generate level-text test inputs with target-gem/start-gem metadata for "
+            "selected Stones & Gems levels."
+        )
+    )
+    ap.add_argument(
+        "--levels-file",
+        type=Path,
+        default=ROOT / "stonesandgem" / "bd_levels" / "bd_levels.txt",
+    )
+    ap.add_argument(
+        "--output-dir",
+        type=Path,
+        default=ROOT / "pddl" / "test_problems",
+    )
+    ap.add_argument(
+        "--domain-name",
+        default=DEFAULT_DOMAIN_NAME,
+        help="Unused compatibility flag kept so existing invocations keep working.",
+    )
+    args = ap.parse_args()
+
+    try:
+        written = generate_selected_problems(args.levels_file, args.output_dir, args.domain_name)
+    except Exception as exc:
+        sys.stderr.write(f"Error: {exc}\n")
+        return 1
+
+    sys.stdout.write(f"Wrote {len(written)} level files to {args.output_dir}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -15,7 +15,7 @@ import problem_gen as base  # type: ignore  # noqa: E402
 
 def _read_level(level_input: str) -> str:
     if level_input.endswith(".txt"):
-        return Path(level_input).read_text(encoding="utf-8").strip()
+        return Path(level_input).read_text(encoding="utf-8")
     return level_input
 
 
@@ -28,7 +28,11 @@ def _interior_cell_name(r: int, c: int) -> str:
 
 
 def generate_compact_problem(level_str: str, problem_name: str, domain_name: str) -> str:
-    rows, cols, _max_time, _required_gems, cell_ids = base.parse_level_string(level_str)
+    prepared = base.prepare_level(level_str)
+    rows = prepared.rows
+    cols = prepared.cols
+    cell_ids = list(prepared.cell_ids)
+    target_gem_pos = prepared.target_gem_pos
 
     padded_rows = rows + 2
     padded_cols = cols + 2
@@ -45,7 +49,6 @@ def generate_compact_problem(level_str: str, problem_name: str, domain_name: str
 
     contents = {}
     falling_cells = set()
-    agent_pos = None
 
     for idx, cell_id in enumerate(cell_ids):
         r = idx // cols
@@ -54,17 +57,13 @@ def generate_compact_problem(level_str: str, problem_name: str, domain_name: str
         contents[(r, c)] = kind
         if cell_id in base.STONE_FALLING_IDS or cell_id in base.GEM_FALLING_IDS:
             falling_cells.add((r, c))
-        if kind == "agent":
-            if agent_pos is not None:
-                raise ValueError("Multiple agent cells found; expected exactly one.")
-            agent_pos = (r, c)
-
-    if agent_pos is None:
-        raise ValueError("No agent found in level.")
+    agent_pos = prepared.agent_pos
 
     init_lines = []
     init_lines.append("    (agent-alive)")
     init_lines.append("    (scan-complete)")
+    if prepared.initial_got_gem:
+        init_lines.append("    (got-gem)")
 
     ar, ac = agent_pos[0] + 1, agent_pos[1] + 1
     init_lines.append(f"    (agent-at {_cell_name(ar, ac)})")
@@ -92,6 +91,8 @@ def generate_compact_problem(level_str: str, problem_name: str, domain_name: str
                 init_lines.append(f"    (stone {cname})")
             elif kind == "gem":
                 init_lines.append(f"    (gem {cname})")
+                if (r - 1, c - 1) == target_gem_pos and not prepared.initial_got_gem:
+                    init_lines.append(f"    (target-gem {cname})")
             elif kind == "brick":
                 init_lines.append(f"    (brick {cname})")
 

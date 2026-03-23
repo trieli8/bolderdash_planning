@@ -13,6 +13,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import problem_gen as base
+
 # ----------------------------------------------------------------------
 # Mapping from HiddenCellType IDs to our simplified PDDL
 # ----------------------------------------------------------------------
@@ -29,11 +31,20 @@ AGENT_IDS = {0, 9}  # Agent, AgentInExit
 BRICK_IDS = {
     7,
     8,  # ExitClosed, ExitOpen
+    10,
+    11,
+    12,
+    13,  # Fireflies (unmodeled hazards -> solid blockers)
+    14,
+    15,
+    16,
+    17,  # Butterflies (unmodeled hazards -> solid blockers)
     18,
     19,  # WallBrick, WallSteel
     20,
     21,
     22,  # Magic walls (treat as solid)
+    23,  # Blob (unmodeled growth -> solid blocker)
 }
 
 
@@ -118,7 +129,13 @@ def generate_pddl_problem(
     """
     Generate a full PDDL problem text from a level string.
     """
-    rows, cols, max_time, required_gems, cell_ids = parse_level_string(level_str)
+    prepared = base.prepare_level(level_str)
+    rows = prepared.rows
+    cols = prepared.cols
+    max_time = prepared.max_time
+    required_gems = prepared.required_gems
+    cell_ids = list(prepared.cell_ids)
+    target_gem_pos = prepared.target_gem_pos
 
     # Pad with a 1-cell brick border so physics never steps outside.
     padded_rows = rows + 2
@@ -140,7 +157,6 @@ def generate_pddl_problem(
     border_cells.append(scan_end)
 
     # Find agent and classify contents
-    agent_pos = None
     contents = {}  # (r, c) -> kind
     falling_cells = set()
 
@@ -151,15 +167,7 @@ def generate_pddl_problem(
         contents[(r, c)] = kind
         if cell_id in STONE_FALLING_IDS or cell_id in GEM_FALLING_IDS:
             falling_cells.add((r, c))
-        if kind == "agent":
-            if agent_pos is not None:
-                raise ValueError(
-                    "Multiple agent cells found; this script expects exactly one."
-                )
-            agent_pos = (r, c)
-
-    if agent_pos is None:
-        raise ValueError("No agent found in level (no cell with ID in AGENT_IDS).")
+    agent_pos = prepared.agent_pos
 
     # Shift agent into padded coordinates
     padded_agent_pos = (agent_pos[0] + 1, agent_pos[1] + 1)
@@ -179,6 +187,8 @@ def generate_pddl_problem(
     # High-level flags
     init_lines.append("    (agent-alive)")
     init_lines.append("    (scan-complete)")
+    if prepared.initial_got_gem:
+        init_lines.append("    (got-gem)")
 
     # Agent position
     ar, ac = padded_agent_pos
@@ -209,6 +219,8 @@ def generate_pddl_problem(
                 init_lines.append(f"    (stone {cname})")
             elif inner_kind == "gem":
                 init_lines.append(f"    (gem {cname})")
+                if (r - 1, c - 1) == target_gem_pos and not prepared.initial_got_gem:
+                    init_lines.append(f"    (target-gem {cname})")
             elif inner_kind == "brick":
                 init_lines.append(f"    (brick {cname})")
             if (r - 1, c - 1) in falling_cells:
@@ -321,7 +333,7 @@ def main():
     if level_input.endswith(".txt"):
         try:
             with open(level_input, "r", encoding="utf-8") as f:
-                level_str = f.read().strip()
+                level_str = f.read()
         except OSError as e:
             sys.stderr.write(f"Error reading file '{level_input}': {e}\n")
             sys.exit(1)

@@ -67,10 +67,13 @@ def generate_compact_problem(level_str: str, problem_name: str, domain_name: str
 
     if agent_pos is None:
         raise ValueError("No agent found in level.")
+    target_gem_pos = base.select_target_gem_position(agent_pos, gem_positions)
+    target_gem_index = gem_positions.index(target_gem_pos) if target_gem_pos is not None else None
 
     agent_obj = "agent_0"
     stone_objs = [f"stone_{i}" for i in range(len(stone_positions))]
     gem_objs = [f"gem_{i}" for i in range(len(gem_positions))]
+    target_gem_obj = gem_objs[target_gem_index] if target_gem_index is not None else None
 
     init_lines = []
     init_lines.append("    (agent-alive)")
@@ -97,6 +100,8 @@ def generate_compact_problem(level_str: str, problem_name: str, domain_name: str
         cell = _cell_name(pr, pc)
         init_lines.append(f"    (gem-entity {gem_obj})")
         init_lines.append(f"    (gem-at {gem_obj} {cell})")
+        if gem_obj == target_gem_obj:
+            init_lines.append(f"    (target-gem-entity {gem_obj})")
         init_lines.append(f"    (= (x {gem_obj}) {pr})")
         init_lines.append(f"    (= (y {gem_obj}) {pc})")
 
@@ -164,8 +169,11 @@ def generate_compact_problem(level_str: str, problem_name: str, domain_name: str
     obj_lines.append(f"    {agent_obj} - agent")
     if stone_objs:
         obj_lines.append(f"    {' '.join(stone_objs)} - stone")
-    if gem_objs:
-        obj_lines.append(f"    {' '.join(gem_objs)} - gem")
+    normal_gem_objs = [gem_obj for gem_obj in gem_objs if gem_obj != target_gem_obj]
+    if normal_gem_objs:
+        obj_lines.append(f"    {' '.join(normal_gem_objs)} - gem")
+    if target_gem_obj is not None:
+        obj_lines.append(f"    {target_gem_obj} - target-gem")
 
     goal_lines = [
         "    (got-gem)",
