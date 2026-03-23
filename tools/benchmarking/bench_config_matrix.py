@@ -629,13 +629,63 @@ def discover_domains(
 
 
 def parse_level_size(path: Path) -> Tuple[int, int]:
-    text = path.read_text(encoding="utf-8", errors="replace").strip()
-    parts = [p.strip() for p in text.split("|") if p.strip()]
+    text = path.read_text(encoding="utf-8", errors="replace")
+    level_lines: List[str] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith((";", "#")):
+            continue
+        level_lines.append(stripped)
+    parts = [p.strip() for p in "\n".join(level_lines).split("|") if p.strip()]
     if len(parts) < 2:
         raise ValueError(f"Could not parse rows/cols from level: {path}")
     rows = int(parts[0])
     cols = int(parts[1])
     return rows, cols
+
+
+def _path_has_glob_magic(raw: str) -> bool:
+    return any(ch in raw for ch in "*?[")
+
+
+def _expand_custom_level_glob(raw: str, *, config_dir: Path) -> List[Path]:
+    token = str(raw or "").strip()
+    if not token:
+        raise ValueError("config.custom_levels_glob must not be empty.")
+
+    pattern_path = Path(token)
+    candidates = (
+        [pattern_path]
+        if pattern_path.is_absolute()
+        else [config_dir / pattern_path, repo_root() / pattern_path]
+    )
+
+    matches: List[Path] = []
+    seen = set()
+    for candidate in candidates:
+        candidate_text = str(candidate)
+        if _path_has_glob_magic(candidate_text):
+            base_dir = candidate.parent
+            if not base_dir.exists():
+                continue
+            paths = sorted(base_dir.glob(candidate.name))
+        elif candidate.is_dir():
+            # A directory path means "all custom level text files in this folder".
+            paths = sorted(candidate.glob("*.txt"))
+        elif candidate.exists():
+            paths = [candidate]
+        else:
+            continue
+
+        for path in paths:
+            if path.is_dir():
+                continue
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            matches.append(resolved)
+    return matches
 
 
 def collect_custom_levels(
@@ -646,6 +696,15 @@ def collect_custom_levels(
     raw = config.get("custom_levels") or []
     if not isinstance(raw, list):
         raise ValueError("config.custom_levels must be a list.")
+    raw_glob = config.get("custom_levels_glob")
+    if raw_glob is not None and not isinstance(raw_glob, str):
+        raise ValueError("config.custom_levels_glob must be a string.")
+
+    glob_paths: List[Path] = []
+    if raw_glob is not None:
+        glob_paths = _expand_custom_level_glob(raw_glob, config_dir=config_dir)
+        if not glob_paths:
+            raise FileNotFoundError(f"No custom levels matched custom_levels_glob: {raw_glob}")
 
     levels: List[LevelInfo] = []
     seen = set()
@@ -654,6 +713,12 @@ def collect_custom_levels(
         if not p.exists():
             raise FileNotFoundError(f"Custom level not found: {p}")
         rp = p.resolve()
+        if rp in seen:
+            continue
+        seen.add(rp)
+        rows, cols = parse_level_size(rp)
+        levels.append(LevelInfo(path=rp, rows=rows, cols=cols, cells=rows * cols, source="custom"))
+    for rp in glob_paths:
         if rp in seen:
             continue
         seen.add(rp)

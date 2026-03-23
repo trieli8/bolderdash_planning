@@ -40,23 +40,53 @@ def _start_target_name(level_index: int, start_gem_ordinal: int, target_gem_ordi
     )
 
 
-def _metadata_block(
+def _render_level(
+    rows: int,
+    cols: int,
+    max_time: int,
+    required_gems: int,
+    cell_ids: list[int],
+) -> str:
+    fields = [str(rows), str(cols), str(max_time), str(required_gems)]
+    fields.extend(f"{cell_id:02d}" for cell_id in cell_ids)
+    return "|".join(fields) + "|"
+
+
+def _marked_level_text(
+    level_str: str,
     *,
-    level_index: int,
     target_gem_ordinal: int,
-    total_gems: int,
     start_gem_ordinal: int | None = None,
 ) -> str:
-    lines = [f"; source: stonesandgem/bd_levels/bd_levels.txt line {level_index}"]
+    rows, cols, max_time, required_gems, cell_ids = base.parse_level_string(level_str)
+    gem_positions = _gem_positions(level_str)
+    target_pos = gem_positions[target_gem_ordinal - 1]
+    target_idx = target_pos[0] * cols + target_pos[1]
+    target_cell_id = cell_ids[target_idx]
+    if target_cell_id in base.GEM_FALLING_IDS:
+        cell_ids[target_idx] = base.TARGET_GEM_FALLING_ID
+    else:
+        cell_ids[target_idx] = base.TARGET_GEM_STATIC_ID
+
     if start_gem_ordinal is not None:
-        lines.append(f"; start-gem-ordinal: {start_gem_ordinal}")
-    lines.append(f"; target-gem-ordinal: {target_gem_ordinal}")
-    lines.append(f"; gem-count: {total_gems}")
-    return "\n".join(lines)
+        if start_gem_ordinal == target_gem_ordinal:
+            raise ValueError(
+                "Self-contained txt test problems cannot encode start_gem == target_gem."
+            )
+        start_pos = gem_positions[start_gem_ordinal - 1]
+        start_idx = start_pos[0] * cols + start_pos[1]
+        agent_idx = next(
+            idx for idx, cell_id in enumerate(cell_ids)
+            if cell_id in base.AGENT_IDS
+        )
+        cell_ids[agent_idx] = next(iter(base.EMPTY_IDS))
+        cell_ids[start_idx] = next(iter(base.AGENT_IDS))
+
+    return _render_level(rows, cols, max_time, required_gems, cell_ids)
 
 
-def _write_level_file(path: Path, metadata: str, level_str: str) -> None:
-    path.write_text(f"{metadata}\n{level_str.strip()}\n", encoding="utf-8")
+def _write_level_file(path: Path, level_str: str) -> None:
+    path.write_text(f"{level_str.strip()}\n", encoding="utf-8")
 
 
 def generate_selected_problems(
@@ -83,27 +113,28 @@ def generate_selected_problems(
         gem_count = len(gem_positions)
         for gem_ordinal in range(1, gem_count + 1):
             stem = _target_only_name(level_index, gem_ordinal)
-            metadata = _metadata_block(
-                level_index=level_index,
-                target_gem_ordinal=gem_ordinal,
-                total_gems=gem_count,
-            )
             out_path = output_dir / f"{stem}.txt"
-            _write_level_file(out_path, metadata, level_str)
+            _write_level_file(
+                out_path,
+                _marked_level_text(level_str, target_gem_ordinal=gem_ordinal),
+            )
             written.append(out_path.name)
 
         if level_index == 1:
             for start_gem_ordinal in range(1, gem_count + 1):
                 for target_gem_ordinal in range(1, gem_count + 1):
+                    if start_gem_ordinal == target_gem_ordinal:
+                        continue
                     stem = _start_target_name(level_index, start_gem_ordinal, target_gem_ordinal)
-                    metadata = _metadata_block(
-                        level_index=level_index,
-                        start_gem_ordinal=start_gem_ordinal,
-                        target_gem_ordinal=target_gem_ordinal,
-                        total_gems=gem_count,
-                    )
                     out_path = output_dir / f"{stem}.txt"
-                    _write_level_file(out_path, metadata, level_str)
+                    _write_level_file(
+                        out_path,
+                        _marked_level_text(
+                            level_str,
+                            start_gem_ordinal=start_gem_ordinal,
+                            target_gem_ordinal=target_gem_ordinal,
+                        ),
+                    )
                     written.append(out_path.name)
 
     return written
@@ -112,8 +143,8 @@ def generate_selected_problems(
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=(
-            "Generate level-text test inputs with target-gem/start-gem metadata for "
-            "selected Stones & Gems levels."
+            "Generate self-contained level-text test inputs with in-grid target-gem "
+            "markers for selected Stones & Gems levels."
         )
     )
     ap.add_argument(

@@ -19,33 +19,15 @@ import problem_gen as base
 # Mapping from HiddenCellType IDs to our simplified PDDL
 # ----------------------------------------------------------------------
 
-# These values are taken from stonesngems_cpp/definitions.h
-# (enum class HiddenCellType). We only handle a subset here.
-STONE_IDS = {3, 4, 48}  # Stone, StoneFalling, StoneInDirt
-STONE_FALLING_IDS = {4}  # StoneFalling
-GEM_IDS = {5, 6}  # Diamond, DiamondFalling
-GEM_FALLING_IDS = {6}  # DiamondFalling
-EMPTY_IDS = {1}  # Empty
-DIRT_IDS = {2}  # Dirt
-AGENT_IDS = {0, 9}  # Agent, AgentInExit
-BRICK_IDS = {
-    7,
-    8,  # ExitClosed, ExitOpen
-    10,
-    11,
-    12,
-    13,  # Fireflies (unmodeled hazards -> solid blockers)
-    14,
-    15,
-    16,
-    17,  # Butterflies (unmodeled hazards -> solid blockers)
-    18,
-    19,  # WallBrick, WallSteel
-    20,
-    21,
-    22,  # Magic walls (treat as solid)
-    23,  # Blob (unmodeled growth -> solid blocker)
-}
+# Reuse the base generator's ID sets so marker IDs and other tile handling stay in sync.
+STONE_IDS = base.STONE_IDS
+STONE_FALLING_IDS = base.STONE_FALLING_IDS
+GEM_IDS = base.GEM_IDS
+GEM_FALLING_IDS = base.GEM_FALLING_IDS
+EMPTY_IDS = base.EMPTY_IDS
+DIRT_IDS = base.DIRT_IDS
+AGENT_IDS = base.AGENT_IDS
+BRICK_IDS = base.BRICK_IDS
 
 
 def classify_cell_id(cell_id: int):

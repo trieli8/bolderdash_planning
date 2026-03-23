@@ -19,7 +19,7 @@ Examples:
   $0 --list
 
 Behavior:
-  - Uses the latest config-matrix run when run_dir is omitted.
+  - Uses the latest config-matrix or levels-matrix run when run_dir is omitted.
   - Lists playable selectors from benchmark_matrix.csv.
   - If selector is omitted and the run has exactly one playable selector, it is used automatically.
 EOF
@@ -27,11 +27,11 @@ EOF
 
 latest_run_dir() {
     shopt -s nullglob
-    local candidates=("$RESULTS_ROOT"/config-matrix_*)
+    local candidates=("$RESULTS_ROOT"/config-matrix_* "$RESULTS_ROOT"/levels-matrix_*)
     shopt -u nullglob
 
     if [ ${#candidates[@]} -eq 0 ]; then
-        echo "No config-matrix runs found under $RESULTS_ROOT" >&2
+        echo "No config-matrix or levels-matrix runs found under $RESULTS_ROOT" >&2
         exit 1
     fi
 

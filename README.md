@@ -108,6 +108,20 @@ python tools/bench_classic.py \
   `classic-bench-d_domain_scanner_separated-v_fd.plan`.
 - Writes benchmark logs to `results/classic-bench/run_<timestamp>/` (or `--results-dir`) with filenames including domain + problem + variant.
 
+### Folder Matrix Benchmark
+
+```bash
+python tools/benchmarking/bench_levels_matrix.py \
+  --config tools/benchmarking/config_examples/the_benchmark.json
+```
+
+- Runs every planner setting against every compatible test domain and every level in `levels_dir`.
+- Keeps the config small: `levels_dir`, `planner_settings`, `timeout_sec`, and `max_parallel_runs` are the main inputs.
+- Writes a `benchmark_matrix.csv` plus logs, compiled problems, plans, and `run_metadata.json` under `tools/benchmarking/results/levels-matrix_<timestamp>/` by default.
+- Generates the config-matrix SVG plots automatically unless `--skip-plots` is passed.
+- Graceful exit: send `Ctrl-C` once to stop admitting new tasks and drain the currently running work before exit; partial CSV results stay on disk throughout the run.
+- Optional config fields: `domains` or `domains_glob` to control the benchmark domains, and `level_glob` to filter files inside `levels_dir` (default: `*.txt`).
+
 ### PDDL+ planning wrapper
 
 ```bash

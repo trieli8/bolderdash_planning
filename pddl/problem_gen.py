@@ -21,10 +21,16 @@ from pathlib import Path
 
 # These values are taken from stonesngems_cpp/definitions.h
 # (enum class HiddenCellType). We only handle a subset here.
+# The 90/91 values are planner-only markers used in generated test problems
+# to distinguish the target gem without relying on comment metadata.
 STONE_IDS   = {3, 4, 48}        # Stone, StoneFalling, StoneInDirt
 STONE_FALLING_IDS = {4}         # StoneFalling
-GEM_IDS     = {5, 6}            # Diamond, DiamondFalling
-GEM_FALLING_IDS = {6}           # DiamondFalling
+TARGET_GEM_STATIC_ID = 90
+TARGET_GEM_FALLING_ID = 91
+TARGET_GEM_IDS = {TARGET_GEM_STATIC_ID, TARGET_GEM_FALLING_ID}
+TARGET_GEM_FALLING_IDS = {TARGET_GEM_FALLING_ID}
+GEM_IDS     = {5, 6, *TARGET_GEM_IDS}  # Diamond, DiamondFalling, marked target gems
+GEM_FALLING_IDS = {6, *TARGET_GEM_FALLING_IDS}  # DiamondFalling, marked falling target gem
 EMPTY_IDS   = {1}               # Empty
 DIRT_IDS    = {2}               # Dirt
 AGENT_IDS   = {0, 9}            # Agent, AgentInExit
@@ -169,6 +175,7 @@ def prepare_level(level_text: str, level_metadata: LevelMetadata | None = None) 
 
     agent_pos = None
     gem_positions = []
+    explicit_target_gem_positions = []
     for idx, cell_id in enumerate(cell_ids):
         r = idx // cols
         c = idx % cols
@@ -179,9 +186,18 @@ def prepare_level(level_text: str, level_metadata: LevelMetadata | None = None) 
             agent_pos = (r, c)
         elif kind == "gem":
             gem_positions.append((r, c))
+            if cell_id in TARGET_GEM_IDS:
+                explicit_target_gem_positions.append((r, c))
 
     if agent_pos is None:
         raise ValueError("No agent found in level (no cell with ID in AGENT_IDS).")
+    if len(explicit_target_gem_positions) > 1:
+        raise ValueError(
+            "Multiple target gem markers found; this script expects at most one marked target gem."
+        )
+    explicit_target_gem_pos = (
+        explicit_target_gem_positions[0] if explicit_target_gem_positions else None
+    )
 
     initial_got_gem = False
     if level_metadata.start_gem_ordinal is not None:
@@ -202,6 +218,14 @@ def prepare_level(level_text: str, level_metadata: LevelMetadata | None = None) 
             level_metadata.target_gem_ordinal,
             "target-gem-ordinal",
         )
+        if explicit_target_gem_pos is not None and explicit_target_gem_pos != target_gem_pos:
+            raise ValueError(
+                "Target gem marker in the level disagrees with target-gem-ordinal metadata."
+            )
+        if target_gem_pos == agent_pos:
+            initial_got_gem = True
+    elif explicit_target_gem_pos is not None:
+        target_gem_pos = explicit_target_gem_pos
         if target_gem_pos == agent_pos:
             initial_got_gem = True
     else:
