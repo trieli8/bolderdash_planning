@@ -6,22 +6,11 @@
   "level_glob": "*.txt",
   "planner_settings": [
     {
-      "name": "fd-lazy-greedy-classic",
-      "family": "classic",
-      "planner": "fd",
-      "planner_args": "--search let(h,ff(),lazy_greedy([h],preferred=[h]))"
-    },
-    {
-      "name": "fd-lazy-greedy-fa",
+      "name": "fd-lazy-fa",
       "family": "fa",
       "planner": "fd",
-      "planner_args": "--search let(h,ff(),lazy_greedy([h],preferred=[h]))"
-    },
-    {
-      "name": "enhsp-gbfs-blind-plus",
-      "family": "plus",
-      "planner": "enhsp",
-      "planner_args": "-s gbfs -h blind"
+      "domain_include": ["*domain_FA_non-scanner_separated.pddl"],
+      "planner_args": "--search \"let(hff, ff(), lazy_greedy([hff], preferred=[hff]))\""
     }
   ]
 }
