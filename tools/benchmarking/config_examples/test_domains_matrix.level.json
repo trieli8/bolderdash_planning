@@ -1,0 +1,38 @@
+{
+  "timeout_sec": 1500,
+  "max_parallel_runs": 2,
+  "random_seed": 1337,
+  "domains_glob": "pddl/test_domains/domain*.pddl",
+  "custom_fail_streak_limit": 3,
+  "repeat_successful_runs": 0,
+  "custom_levels": [
+    "pddl/level.txt"
+  ],
+  "growth": {
+    "enabled": false,
+    "start_size": 4,
+    "max_size": 30,
+    "size_step": 1,
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "random_repeats": {
+    "enabled": false,
+    "sizes": ["7x7"],
+    "repeats_per_size": 5,
+    "stone_counts": [2, 4, 8, 16, 32],
+    "stone_count_mode": "cycle",
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "planner_settings": [
+    {
+      "name": "fd-lazy-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy(single(h),preferred=[h]))"
+    }
+  ]
+}

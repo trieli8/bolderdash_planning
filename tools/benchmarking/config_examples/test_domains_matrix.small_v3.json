@@ -1,0 +1,56 @@
+{
+  "timeout_sec": 300,
+  "max_parallel_runs": 6,
+  "random_seed": 1337,
+  "domains_glob": "pddl/test_domains/domain*.pddl",
+  "custom_fail_streak_limit": 3,
+  "repeat_successful_runs": 0,
+  "growth_stop_on_failure": true,
+  "stop_remaining_random_repeats_for_pair_on_failure": true,
+  "max_parallel_custom_runs": 2,
+  "interleave_smaller_noncustom_with_custom": true,
+  "only_smaller_while_custom_running": true,
+  "noncustom_max_size_while_custom_running": "10x10",
+  "custom_levels": [
+    "pddl/level_reduce.txt",
+    "pddl/level.txt"
+  ],
+  "growth": {
+    "enabled": true,
+    "start_size": 4,
+    "max_size": 30,
+    "size_step": 1,
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "random_repeats": {
+    "enabled": true,
+    "sizes": ["7x7"],
+    "repeats_per_size": 5,
+    "stone_counts": [2, 4, 8, 16, 32],
+    "stone_count_mode": "cycle",
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8
+  },
+  "planner_settings": [
+    {
+      "name": "fd-lazy-greedy-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy_greedy([h],preferred=[h]))"
+    },
+    {
+      "name": "fd-lazy-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy(single(h),preferred=[h]))"
+    },
+    {
+      "name": "enhsp-gbfs-blind-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s gbfs -h blind"
+    }  ]
+}

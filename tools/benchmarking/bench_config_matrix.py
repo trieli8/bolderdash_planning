@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -247,6 +247,7 @@ class PlannerSetting:
     family: str  # classic | fa | plus
     planner: str
     timeout_sec: int
+    validator: bool
     stream: bool
     planner_args: str
     java_opts: str
@@ -285,6 +286,9 @@ class LevelInfo:
     cols: int
     cells: int
     source: str  # custom | random-repeat | growth
+    level_id: str = ""
+    growth_size_index: Optional[int] = None
+    growth_variant_index: int = 0
 
 
 @dataclass(frozen=True)
@@ -300,12 +304,16 @@ class PairState:
     phase: str
     custom_index: int
     random_repeat_index: int
-    growth_index: int
     custom_fail_streak: int
     growth_max_nonfailure_size: int
     pending_excluded_runs: int
-    in_flight: bool
+    non_growth_in_flight: bool
+    growth_in_flight: int
+    growth_blocked: bool
+    growth_max_allowed_size_index: Optional[int]
     done: bool
+    growth_completed_counts: Dict[int, int] = field(default_factory=dict)
+    growth_reserved_counts: Dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -317,6 +325,32 @@ class RunTask:
     level: LevelInfo
     phase: str
     repeat_index: int = 0
+    growth_level_id: str = ""
+    growth_size_index: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class GrowthConfig:
+    enabled: bool
+    sizes: Tuple[Tuple[int, int], ...]
+    required_gems: int
+    max_time_min: int
+    max_time_scale: int
+    min_variants_per_size: int
+    continuous_after_minimum: bool
+    parallel_sizes_ahead: int
+    max_parallel_per_pair: int
+    seed: Any
+    standard_timeout_sec: int
+    validator_timeout_multiplier: float
+
+
+@dataclass
+class GrowthLevelRecord:
+    level: LevelInfo
+    size_index: int
+    validator_state: str  # pending | running | accepted | rejected
+    validator_status: str = ""
 
 
 @dataclass
@@ -493,6 +527,7 @@ def parse_planner_settings(
             family=family,
             planner=planner,
             timeout_sec=timeout_sec,
+            validator=bool(entry.get("validator", False)),
             stream=stream,
             planner_args=planner_args,
             java_opts=java_opts,
@@ -627,78 +662,310 @@ def collect_custom_levels(
     return levels
 
 
-def generate_level_text(
+def _seed_to_int(raw: Any) -> int:
+    if raw is None:
+        return 0
+    if isinstance(raw, bool):
+        return int(raw)
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    value = 2166136261
+    for byte in str(raw).encode("utf-8", errors="replace"):
+        value ^= byte
+        value = (value * 16777619) & 0xFFFFFFFF
+    return value
+
+
+def _render_level_text(
+    *,
+    grid: Sequence[Sequence[int]],
     rows: int,
     cols: int,
     required_gems: int,
     max_time_min: int,
     max_time_scale: int,
 ) -> str:
+    max_time = max(max_time_min, rows * cols * max_time_scale)
+    header = f"{rows}|{cols}|{max_time}|{required_gems}|"
+    body = "\n".join("|".join(f"{cell:02d}" for cell in row) + "|" for row in grid)
+    return f"{header}\n{body}\n"
+
+
+def _build_l_path(start: Tuple[int, int], goal: Tuple[int, int], rng: random.Random) -> List[Tuple[int, int]]:
+    r, c = start
+    gr, gc = goal
+    path = [(r, c)]
+    axes = ["h", "v"]
+    if rng.random() < 0.5:
+        axes.reverse()
+    for axis in axes:
+        if axis == "h":
+            step = 1 if gc >= c else -1
+            while c != gc:
+                c += step
+                path.append((r, c))
+        else:
+            step = 1 if gr >= r else -1
+            while r != gr:
+                r += step
+                path.append((r, c))
+    return path
+
+
+def _reachable_cells_without_walls(
+    grid: Sequence[Sequence[int]],
+    *,
+    start: Tuple[int, int],
+) -> List[Tuple[int, int]]:
+    rows = len(grid)
+    cols = len(grid[0]) if rows > 0 else 0
+    wall_ids = {18, 19}
+    q = [start]
+    seen = {start}
+    out: List[Tuple[int, int]] = []
+    while q:
+        r, c = q.pop()
+        out.append((r, c))
+        for nr, nc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+            if not (0 <= nr < rows and 0 <= nc < cols):
+                continue
+            if (nr, nc) in seen:
+                continue
+            if grid[nr][nc] in wall_ids:
+                continue
+            seen.add((nr, nc))
+            q.append((nr, nc))
+    return out
+
+
+def _manhattan(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+
+def _preferred_gem_distance_floor(rows: int, cols: int) -> int:
+    max_dist = max(1, rows + cols - 2)
+    return max(2, min(max_dist, int(round(max_dist * 0.60))))
+
+
+def _reduced_gem_target(total_cells: int, required_gems: int, rng: random.Random) -> int:
+    extra_gems = max(0, int(total_cells * (0.005 + rng.random() * 0.007)))
+    soft_cap = max(required_gems, max(2, total_cells // 15))
+    return max(1, min(soft_cap, required_gems + extra_gems))
+
+
+def generate_level_text(
+    rows: int,
+    cols: int,
+    required_gems: int,
+    max_time_min: int,
+    max_time_scale: int,
+    *,
+    rng: random.Random,
+    stone_floor: Optional[int] = None,
+) -> str:
     AGENT = 0
     EMPTY = 1
     DIRT = 2
     STONE = 3
     GEM = 5
+    WALL_BRICK = 18
+    WALL_STEEL = 19
+
+    total_cells = rows * cols
+    if total_cells < 4:
+        raise ValueError(f"Could not build generated level for {rows}x{cols}")
 
     grid = [[DIRT for _ in range(cols)] for _ in range(rows)]
-    agent_pos = (0, 0)
 
-    gem_pos = None
-    best_dist = -1
-    for r in range(rows):
-        for c in range(cols):
-            if (r, c) == agent_pos:
-                continue
-            dist = abs(r - agent_pos[0]) + abs(c - agent_pos[1])
-            if dist > best_dist:
-                best_dist = dist
-                gem_pos = (r, c)
-            elif dist == best_dist and gem_pos is not None and (r, c) > gem_pos:
-                gem_pos = (r, c)
-    if gem_pos is None or best_dist <= 1:
-        raise ValueError(f"Could not place non-adjacent gem for {rows}x{cols}")
+    anchor_positions = [
+        (0, 0),
+        (0, max(0, cols // 2)),
+        (max(0, rows // 2), 0),
+        (max(0, rows // 3), max(0, cols // 3)),
+        (max(0, rows // 2), max(0, cols // 2)),
+    ]
+    agent_pos = rng.choice(anchor_positions)
+    preferred_gem_distance = _preferred_gem_distance_floor(rows, cols)
 
-    grid[agent_pos[0]][agent_pos[1]] = AGENT
-    grid[gem_pos[0]][gem_pos[1]] = GEM
+    gem_candidates = [
+        (r, c)
+        for r in range(rows)
+        for c in range(cols)
+        if (r, c) != agent_pos and _manhattan((r, c), agent_pos) >= preferred_gem_distance
+    ]
+    if not gem_candidates:
+        gem_candidates = [
+            (r, c)
+            for r in range(rows)
+            for c in range(cols)
+            if (r, c) != agent_pos and _manhattan((r, c), agent_pos) > 1
+        ]
+    if not gem_candidates:
+        gem_candidates = [(r, c) for r in range(rows) for c in range(cols) if (r, c) != agent_pos]
+    if not gem_candidates:
+        raise ValueError(f"Could not place gem for {rows}x{cols}")
+    main_gem = max(gem_candidates, key=lambda pos: (_manhattan(pos, agent_pos), pos))
+    corridor = _build_l_path(agent_pos, main_gem, rng)
+    reserved = set(corridor)
+    reserved.add(main_gem)
+    for r, c in corridor:
+        if (r, c) != agent_pos:
+            grid[r][c] = EMPTY if rng.random() < 0.55 else DIRT
 
-    # Deterministic but spatially varied placement for synthetic growth maps.
-    layout_seed = (
-        rows * 73856093
-        ^ cols * 19349663
-        ^ required_gems * 83492791
-        ^ max_time_scale * 2654435761
+    safe_start_zone = set()
+    for ar in range(max(0, agent_pos[0] - 1), min(rows, agent_pos[0] + 2)):
+        for ac in range(max(0, agent_pos[1] - 1), min(cols, agent_pos[1] + 2)):
+            safe_start_zone.add((ar, ac))
+            grid[ar][ac] = EMPTY if rng.random() < 0.5 else DIRT
+    reserved.update(safe_start_zone)
+
+    max_line_len = max(2, min(max(rows, cols) - 1, 7))
+    wall_attempts = max(4, total_cells // 6)
+    wall_budget = max(1, int(total_cells * (0.08 + rng.random() * 0.10)))
+    walls_placed = 0
+    for _ in range(wall_attempts):
+        if walls_placed >= wall_budget:
+            break
+        orientation = rng.choice(("h", "v"))
+        length = rng.randint(2, max_line_len)
+        tile = WALL_STEEL if rng.random() < 0.2 else WALL_BRICK
+        start_r = rng.randrange(rows)
+        start_c = rng.randrange(cols)
+        cells: List[Tuple[int, int]] = []
+        for offset in range(length):
+            rr = start_r + (offset if orientation == "v" else 0)
+            cc = start_c + (offset if orientation == "h" else 0)
+            if not (0 <= rr < rows and 0 <= cc < cols):
+                cells = []
+                break
+            cells.append((rr, cc))
+        if not cells:
+            continue
+        if any(cell in reserved for cell in cells):
+            continue
+        for rr, cc in cells:
+            grid[rr][cc] = tile
+        walls_placed += len(cells)
+
+    block_attempts = max(2, total_cells // 18)
+    for _ in range(block_attempts):
+        height = min(rows, rng.randint(1, 2))
+        width = min(cols, rng.randint(1, 3))
+        start_r = rng.randrange(rows - height + 1)
+        start_c = rng.randrange(cols - width + 1)
+        cells = [
+            (rr, cc)
+            for rr in range(start_r, start_r + height)
+            for cc in range(start_c, start_c + width)
+        ]
+        if any(cell in reserved for cell in cells):
+            continue
+        tile = WALL_STEEL if rng.random() < 0.15 else WALL_BRICK
+        for rr, cc in cells:
+            grid[rr][cc] = tile
+
+    reachable = _reachable_cells_without_walls(grid, start=agent_pos)
+    reachable_non_start = [cell for cell in reachable if cell != agent_pos]
+    if not reachable_non_start:
+        reachable_non_start = [main_gem]
+    far_reachable_non_start = [
+        cell
+        for cell in reachable_non_start
+        if _manhattan(cell, agent_pos) >= preferred_gem_distance and cell not in safe_start_zone
+    ]
+
+    required_positions: List[Tuple[int, int]] = [main_gem]
+    while len(required_positions) < max(1, required_gems):
+        remaining = [cell for cell in far_reachable_non_start if cell not in required_positions]
+        if not remaining:
+            remaining = [
+                cell
+                for cell in reachable_non_start
+                if cell not in required_positions and cell not in safe_start_zone
+            ]
+        if not remaining:
+            remaining = [cell for cell in reachable_non_start if cell not in required_positions]
+        if not remaining:
+            break
+        choice = max(
+            remaining,
+            key=lambda pos: (_manhattan(pos, agent_pos), rng.random()),
+        )
+        required_positions.append(choice)
+
+    gem_target = _reduced_gem_target(total_cells, max(1, required_gems), rng)
+    extra_gem_pool = [
+        cell
+        for cell in far_reachable_non_start
+        if cell not in required_positions and cell not in safe_start_zone
+    ]
+    if not extra_gem_pool:
+        extra_gem_pool = [
+            cell
+            for cell in reachable_non_start
+            if cell not in required_positions and cell not in safe_start_zone
+        ]
+    extra_gem_pool.sort(
+        key=lambda cell: (_manhattan(cell, agent_pos), rng.random()),
+        reverse=True,
     )
-    layout_rng = random.Random(layout_seed)
+    all_gems = list(required_positions)
+    for cell in extra_gem_pool:
+        if len(all_gems) >= gem_target:
+            break
+        all_gems.append(cell)
 
+    protected_for_stones = set(corridor)
+    protected_for_stones.update(required_positions)
+    protected_for_stones.update(safe_start_zone)
+    computed_stones = max(
+        2,
+        int(total_cells * (0.12 + rng.random() * 0.10)),
+    )
+    if stone_floor is not None:
+        computed_stones = max(computed_stones, stone_floor)
     stone_pool = [
         (r, c)
         for r in range(rows)
         for c in range(cols)
-        if (r, c) not in {agent_pos, gem_pos}
+        if (r, c) not in protected_for_stones
+        and (r, c) not in all_gems
+        and grid[r][c] not in {WALL_BRICK, WALL_STEEL}
     ]
-    if not stone_pool:
-        raise ValueError(f"Could not place stones for {rows}x{cols}")
-    desired_stones = max(2, min((rows * cols) // 40 + 1, 8))
-    stones_to_place = min(desired_stones, len(stone_pool))
-    stone_positions = layout_rng.sample(stone_pool, stones_to_place)
+    rng.shuffle(stone_pool)
+    stones_to_place = min(len(stone_pool), computed_stones)
+    stone_positions = stone_pool[:stones_to_place]
+
+    empty_target = max(2, int(total_cells * (0.12 + rng.random() * 0.16)))
+    empty_pool = [
+        (r, c)
+        for r in range(rows)
+        for c in range(cols)
+        if (r, c) not in stone_positions
+        and (r, c) not in all_gems
+        and (r, c) != agent_pos
+        and grid[r][c] not in {WALL_BRICK, WALL_STEEL}
+    ]
+    rng.shuffle(empty_pool)
+    empty_positions = set(empty_pool[: min(len(empty_pool), empty_target)])
+
     for r, c in stone_positions:
         grid[r][c] = STONE
-
-    blocked = {agent_pos, gem_pos}
-    blocked.update(stone_positions)
-
-    # Increase and spread "air" (empty cells) across the full map, not only
-    # near the start corner.
-    air_pool = [(r, c) for r in range(rows) for c in range(cols) if (r, c) not in blocked]
-    if air_pool:
-        desired_air = min(len(air_pool), max(3, min(len(air_pool) // 5, 50)))
-        for r, c in layout_rng.sample(air_pool, desired_air):
+    for r, c in empty_positions:
+        if (r, c) not in corridor:
             grid[r][c] = EMPTY
+    for r, c in all_gems:
+        grid[r][c] = GEM
+    grid[agent_pos[0]][agent_pos[1]] = AGENT
 
-    max_time = max(max_time_min, rows * cols * max_time_scale)
-    header = f"{rows}|{cols}|{max_time}|{required_gems}|"
-    body = "\n".join("|".join(f"{cell:02d}" for cell in row) + "|" for row in grid)
-    return f"{header}\n{body}\n"
+    return _render_level_text(
+        grid=grid,
+        rows=rows,
+        cols=cols,
+        required_gems=max(1, min(required_gems, len(all_gems))),
+        max_time_min=max_time_min,
+        max_time_scale=max_time_scale,
+    )
 
 
 def generate_random_level_text(
@@ -711,52 +978,15 @@ def generate_random_level_text(
     rng: random.Random,
     stone_count: int,
 ) -> str:
-    AGENT = 0
-    EMPTY = 1
-    DIRT = 2
-    STONE = 3
-    GEM = 5
-
-    grid = [[DIRT for _ in range(cols)] for _ in range(rows)]
-    agent_pos = (0, 0)
-
-    all_cells = [(r, c) for r in range(rows) for c in range(cols) if (r, c) != agent_pos]
-    if not all_cells:
-        raise ValueError(f"Could not build random level for {rows}x{cols}")
-
-    # Prefer non-adjacent gem placement to avoid trivial maps.
-    non_adjacent_cells = [
-        (r, c) for (r, c) in all_cells if abs(r - agent_pos[0]) + abs(c - agent_pos[1]) > 1
-    ]
-    gem_pool = non_adjacent_cells if non_adjacent_cells else all_cells
-
-    # Bias gems toward higher rows while still allowing full-map variety.
-    # Higher rows receive larger weight.
-    gem_weights = [float((rows - r) ** 2) for (r, _c) in gem_pool]
-    gem_pos = rng.choices(gem_pool, weights=gem_weights, k=1)[0]
-
-    stone_pool = [(r, c) for (r, c) in all_cells if (r, c) != gem_pos]
-    if not stone_pool:
-        raise ValueError(f"Could not place stones for random level {rows}x{cols}")
-    stones_to_place = max(1, min(stone_count, len(stone_pool)))
-    for r, c in rng.sample(stone_pool, stones_to_place):
-        grid[r][c] = STONE
-
-    grid[agent_pos[0]][agent_pos[1]] = AGENT
-    grid[gem_pos[0]][gem_pos[1]] = GEM
-
-    occupied = {agent_pos, gem_pos}
-    occupied.update((r, c) for r in range(rows) for c in range(cols) if grid[r][c] == STONE)
-    air_pool = [(r, c) for r in range(rows) for c in range(cols) if (r, c) not in occupied]
-    if air_pool:
-        desired_air = min(len(air_pool), max(2, min(len(air_pool) // 3, 20)))
-        for r, c in rng.sample(air_pool, desired_air):
-            grid[r][c] = EMPTY
-
-    max_time = max(max_time_min, rows * cols * max_time_scale)
-    header = f"{rows}|{cols}|{max_time}|{required_gems}|"
-    body = "\n".join("|".join(f"{cell:02d}" for cell in row) + "|" for row in grid)
-    return f"{header}\n{body}\n"
+    return generate_level_text(
+        rows,
+        cols,
+        required_gems,
+        max_time_min,
+        max_time_scale,
+        rng=rng,
+        stone_floor=stone_count,
+    )
 
 
 def collect_random_repeat_levels(
@@ -850,22 +1080,83 @@ def collect_random_repeat_levels(
     return levels
 
 
-def collect_growth_levels(
+def parse_growth_config(
     *,
     config: Dict[str, Any],
-    run_dir: Path,
-) -> List[LevelInfo]:
+    config_seed: Any,
+    default_timeout: int,
+) -> GrowthConfig:
     growth = config.get("growth") or {}
     if not isinstance(growth, dict):
         raise ValueError("config.growth must be an object when provided.")
 
     enabled = bool(growth.get("enabled", True))
     if not enabled:
-        return []
+        return GrowthConfig(
+            enabled=False,
+            sizes=tuple(),
+            required_gems=1,
+            max_time_min=200,
+            max_time_scale=8,
+            min_variants_per_size=1,
+            continuous_after_minimum=False,
+            parallel_sizes_ahead=1,
+            max_parallel_per_pair=1,
+            seed=config_seed,
+            standard_timeout_sec=default_timeout,
+            validator_timeout_multiplier=1.5,
+        )
 
     required_gems = int(growth.get("required_gems", 1))
     max_time_min = int(growth.get("max_time_min", 200))
     max_time_scale = int(growth.get("max_time_scale", 8))
+    min_variants_per_size = int(
+        growth.get(
+            "min_variants_per_size",
+            growth.get("minimum_versions_per_size", growth.get("variants_per_size", 1)),
+        )
+    )
+    if min_variants_per_size <= 0:
+        raise ValueError("growth.min_variants_per_size must be >= 1.")
+    continuous_after_minimum = bool(
+        growth.get(
+            "continuous_after_minimum",
+            growth.get("continue_after_minimum", growth.get("generate_forever_after_minimum", False)),
+        )
+    )
+    parallel_sizes_ahead = int(
+        growth.get(
+            "parallel_sizes_ahead",
+            growth.get("size_ahead_window", growth.get("unlock_sizes_ahead", 1)),
+        )
+    )
+    if parallel_sizes_ahead <= 0:
+        raise ValueError("growth.parallel_sizes_ahead must be >= 1.")
+    max_parallel_per_pair = int(
+        growth.get(
+            "max_parallel_per_pair",
+            growth.get("max_parallel_growth_runs_per_pair", parallel_sizes_ahead),
+        )
+    )
+    if max_parallel_per_pair <= 0:
+        raise ValueError("growth.max_parallel_per_pair must be >= 1.")
+    standard_timeout_sec = int(
+        growth.get(
+            "standard_timeout_sec",
+            config.get("standard_timeout_sec", default_timeout),
+        )
+    )
+    if standard_timeout_sec <= 0:
+        raise ValueError("growth.standard_timeout_sec must be >= 1.")
+    validator_timeout_multiplier = float(
+        growth.get(
+            "validator_timeout_multiplier",
+            growth.get("validator_timeout_limit_multiplier", 1.5),
+        )
+    )
+    if validator_timeout_multiplier <= 0:
+        raise ValueError("growth.validator_timeout_multiplier must be > 0.")
+    growth_seed = growth.get("seed", config_seed)
 
     sizes: List[Tuple[int, int]]
     if growth.get("sizes"):
@@ -885,24 +1176,377 @@ def collect_growth_levels(
             raise ValueError("growth.size_step must be >= 1.")
         sizes = [(n, n) for n in range(start_size, max_size + 1, size_step)]
 
-    if not sizes:
-        return []
+    return GrowthConfig(
+        enabled=bool(sizes),
+        sizes=tuple(sorted(set(sizes), key=lambda x: (x[0] * x[1], x[0], x[1]))),
+        required_gems=required_gems,
+        max_time_min=max_time_min,
+        max_time_scale=max_time_scale,
+        min_variants_per_size=min_variants_per_size,
+        continuous_after_minimum=continuous_after_minimum,
+        parallel_sizes_ahead=parallel_sizes_ahead,
+        max_parallel_per_pair=max_parallel_per_pair,
+        seed=growth_seed,
+        standard_timeout_sec=standard_timeout_sec,
+        validator_timeout_multiplier=validator_timeout_multiplier,
+    )
 
-    out_dir = run_dir / "generated-levels"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    levels: List[LevelInfo] = []
-    for rows, cols in sorted(set(sizes), key=lambda x: (x[0] * x[1], x[0], x[1])):
-        path = out_dir / f"generated_{rows:03d}x{cols:03d}.txt"
+
+@dataclass(frozen=True)
+class GrowthCompletion:
+    counts_toward_progress: bool
+    validator_rejected: bool = False
+
+
+class GrowthManager:
+    def __init__(
+        self,
+        *,
+        config: GrowthConfig,
+        run_dir: Path,
+        validator_pairing_id: Optional[str],
+    ) -> None:
+        self.config = config
+        self.validator_pairing_id = validator_pairing_id
+        self.out_dir = run_dir / "generated-levels"
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self._seed_base = _seed_to_int(config.seed)
+        self.records_by_id: Dict[str, GrowthLevelRecord] = {}
+        self.accepted_by_size: Dict[int, List[str]] = {idx: [] for idx in range(len(config.sizes))}
+        self.pending_by_size: Dict[int, List[str]] = {idx: [] for idx in range(len(config.sizes))}
+        self.generated_counts: Dict[int, int] = {idx: 0 for idx in range(len(config.sizes))}
+        self.rejected_counts: Dict[int, int] = {idx: 0 for idx in range(len(config.sizes))}
+        self.generation_frozen = False
+
+    def enabled(self) -> bool:
+        return self.config.enabled and bool(self.config.sizes)
+
+    def freeze_generation(self) -> None:
+        self.generation_frozen = True
+
+    def is_generation_frozen(self) -> bool:
+        return self.generation_frozen
+
+    def has_validator(self) -> bool:
+        return self.validator_pairing_id is not None
+
+    def size_count(self) -> int:
+        return len(self.config.sizes)
+
+    def max_parallel_per_pair(self) -> int:
+        return max(1, self.config.max_parallel_per_pair)
+
+    def max_allowed_size_index_for_state(self, state: PairState) -> int:
+        if not self.enabled():
+            return -1
+        max_index = len(self.config.sizes) - 1
+        if state.growth_max_allowed_size_index is not None:
+            max_index = min(max_index, state.growth_max_allowed_size_index)
+        return max_index
+
+    def cap_state_to_smaller_sizes(
+        self,
+        state: PairState,
+        *,
+        failed_size_index: int,
+    ) -> int:
+        if not self.enabled():
+            return 0
+        current_max = self.max_allowed_size_index_for_state(state)
+        new_max = min(current_max, failed_size_index - 1)
+        if new_max >= current_max:
+            return 0
+        excluded = 0
+        for size_index in range(new_max + 1, current_max + 1):
+            completed = state.growth_completed_counts.get(size_index, 0)
+            reserved = state.growth_reserved_counts.get(size_index, 0)
+            excluded += max(0, self.config.min_variants_per_size - completed - reserved)
+        state.growth_max_allowed_size_index = new_max
+        if new_max < 0:
+            state.growth_blocked = True
+        return excluded
+
+    def mandatory_levels_per_pair(self) -> int:
+        if not self.enabled():
+            return 0
+        return len(self.config.sizes) * self.config.min_variants_per_size
+
+    def is_continuous(self) -> bool:
+        return self.enabled() and self.config.continuous_after_minimum
+
+    def is_continuous_active(self) -> bool:
+        return self.is_continuous() and not self.generation_frozen
+
+    def _accepted_or_pending_count(self, size_index: int) -> int:
+        pending_count = len(
+            [
+                level_id
+                for level_id in self.pending_by_size[size_index]
+                if self.records_by_id[level_id].validator_state in {"pending", "running"}
+            ]
+        )
+        return len(self.accepted_by_size[size_index]) + pending_count
+
+    def _continuous_target_total(self) -> int:
+        if not self.config.continuous_after_minimum or not self.config.sizes:
+            return self.config.min_variants_per_size
+        min_total = min(
+            self._accepted_or_pending_count(size_index)
+            for size_index in range(len(self.config.sizes))
+        )
+        return max(self.config.min_variants_per_size, min_total + 1)
+
+    def _should_generate_more(self, size_index: int) -> bool:
+        if self.generation_frozen:
+            return False
+        target_total = self._continuous_target_total()
+        return self._accepted_or_pending_count(size_index) < target_total
+
+    def _make_level_record(self, size_index: int, *, auto_accept: bool) -> GrowthLevelRecord:
+        rows, cols = self.config.sizes[size_index]
+        variant_index = self.generated_counts[size_index] + 1
+        self.generated_counts[size_index] = variant_index
+        level_id = f"generated_{rows:03d}x{cols:03d}_v{variant_index:04d}"
+        path = self.out_dir / f"{level_id}.txt"
+        level_seed = (
+            self._seed_base
+            ^ (size_index + 1) * 73856093
+            ^ variant_index * 19349663
+            ^ rows * 83492791
+            ^ cols * 2654435761
+        )
         txt = generate_level_text(
-            rows=rows,
-            cols=cols,
-            required_gems=required_gems,
-            max_time_min=max_time_min,
-            max_time_scale=max_time_scale,
+            rows,
+            cols,
+            self.config.required_gems,
+            self.config.max_time_min,
+            self.config.max_time_scale,
+            rng=random.Random(level_seed),
         )
         path.write_text(txt, encoding="utf-8")
-        levels.append(LevelInfo(path=path, rows=rows, cols=cols, cells=rows * cols, source="growth"))
-    return levels
+        level = LevelInfo(
+            path=path,
+            rows=rows,
+            cols=cols,
+            cells=rows * cols,
+            source="growth",
+            level_id=level_id,
+            growth_size_index=size_index,
+            growth_variant_index=variant_index,
+        )
+        record = GrowthLevelRecord(
+            level=level,
+            size_index=size_index,
+            validator_state=("accepted" if auto_accept else "pending"),
+        )
+        self.records_by_id[level_id] = record
+        if auto_accept:
+            self.accepted_by_size[size_index].append(level_id)
+        else:
+            self.pending_by_size[size_index].append(level_id)
+        return record
+
+    def _next_pending_record(self, size_index: int) -> Optional[GrowthLevelRecord]:
+        for level_id in self.pending_by_size[size_index]:
+            record = self.records_by_id[level_id]
+            if record.validator_state == "pending":
+                return record
+        return None
+
+    def minimum_frontier_index_for_state(self, state: PairState) -> int:
+        frontier = -1
+        for size_index in range(len(self.config.sizes)):
+            if state.growth_completed_counts.get(size_index, 0) >= self.config.min_variants_per_size:
+                frontier = size_index
+            else:
+                break
+        return frontier
+
+    def unlocked_size_indices_for_state(self, state: PairState) -> List[int]:
+        if not self.enabled():
+            return []
+        max_allowed = self.max_allowed_size_index_for_state(state)
+        if max_allowed < 0:
+            return []
+        frontier = self.minimum_frontier_index_for_state(state)
+        if frontier < 0:
+            limit = 0
+        else:
+            limit = min(max_allowed, frontier + self.config.parallel_sizes_ahead)
+        return sorted(
+            range(limit + 1),
+            key=lambda size_index: (
+                state.growth_completed_counts.get(size_index, 0)
+                + state.growth_reserved_counts.get(size_index, 0),
+                size_index,
+            ),
+        )
+
+    def _accepted_record_for_state(
+        self,
+        state: PairState,
+        *,
+        size_index: int,
+    ) -> Optional[GrowthLevelRecord]:
+        accepted_ids = self.accepted_by_size[size_index]
+        next_index = state.growth_completed_counts.get(size_index, 0) + state.growth_reserved_counts.get(size_index, 0)
+        if next_index >= len(accepted_ids):
+            return None
+        return self.records_by_id[accepted_ids[next_index]]
+
+    def make_task_for_state(
+        self,
+        state: PairState,
+        *,
+        run_id: int,
+    ) -> Optional[RunTask]:
+        if not self.enabled() or state.growth_blocked:
+            return None
+        unlocked_sizes = self.unlocked_size_indices_for_state(state)
+        is_validator_pair = self.validator_pairing_id == state.pairing.id
+
+        for size_index in unlocked_sizes:
+            if is_validator_pair:
+                record = self._next_pending_record(size_index)
+                if record is None and self._should_generate_more(size_index):
+                    record = self._make_level_record(size_index, auto_accept=not self.has_validator())
+                if record is not None:
+                    return RunTask(
+                        run_id=run_id,
+                        pairing_id=state.pairing.id,
+                        setting=state.pairing.setting,
+                        domain=state.pairing.domain,
+                        level=record.level,
+                        phase="growth",
+                        growth_level_id=record.level.level_id,
+                        growth_size_index=size_index,
+                    )
+                continue
+
+            record = self._accepted_record_for_state(state, size_index=size_index)
+            if record is not None:
+                return RunTask(
+                    run_id=run_id,
+                    pairing_id=state.pairing.id,
+                    setting=state.pairing.setting,
+                    domain=state.pairing.domain,
+                    level=record.level,
+                    phase="growth",
+                    growth_level_id=record.level.level_id,
+                    growth_size_index=size_index,
+                )
+            if self.has_validator():
+                if self._should_generate_more(size_index) and self._next_pending_record(size_index) is None:
+                    self._make_level_record(size_index, auto_accept=False)
+                continue
+            if self._should_generate_more(size_index):
+                record = self._make_level_record(size_index, auto_accept=True)
+                return RunTask(
+                    run_id=run_id,
+                    pairing_id=state.pairing.id,
+                    setting=state.pairing.setting,
+                    domain=state.pairing.domain,
+                    level=record.level,
+                    phase="growth",
+                    growth_level_id=record.level.level_id,
+                    growth_size_index=size_index,
+                )
+        return None
+
+    def reserve_task(self, state: PairState, task: RunTask) -> None:
+        if task.phase != "growth" or task.growth_size_index is None:
+            return
+        state.growth_in_flight += 1
+        if task.repeat_index > 0:
+            return
+        if self.validator_pairing_id == task.pairing_id and self.has_validator():
+            record = self.records_by_id.get(task.growth_level_id)
+            if record is not None and record.validator_state == "pending":
+                record.validator_state = "running"
+            return
+        size_index = task.growth_size_index
+        state.growth_reserved_counts[size_index] = state.growth_reserved_counts.get(size_index, 0) + 1
+
+    def complete_task(self, state: PairState, task: RunTask, row: BenchRow) -> GrowthCompletion:
+        if task.phase != "growth" or task.growth_size_index is None:
+            return GrowthCompletion(counts_toward_progress=True)
+
+        if state.growth_in_flight > 0:
+            state.growth_in_flight -= 1
+        if task.repeat_index > 0:
+            return GrowthCompletion(counts_toward_progress=False)
+
+        size_index = task.growth_size_index
+        if self.validator_pairing_id == task.pairing_id and self.has_validator():
+            record = self.records_by_id.get(task.growth_level_id)
+            if record is None:
+                return GrowthCompletion(counts_toward_progress=False)
+            fast_timeout_limit = self.config.standard_timeout_sec * self.config.validator_timeout_multiplier
+            validator_rejected = (
+                row.status == "no-path"
+                or (row.status == "timeout" and float(row.timeout_sec) <= fast_timeout_limit)
+            )
+            record.validator_status = row.status
+            if validator_rejected:
+                record.validator_state = "rejected"
+                self.rejected_counts[size_index] += 1
+                self.pending_by_size[size_index] = [
+                    level_id for level_id in self.pending_by_size[size_index] if level_id != task.growth_level_id
+                ]
+                return GrowthCompletion(counts_toward_progress=False, validator_rejected=True)
+
+            if record.validator_state in {"pending", "running"}:
+                record.validator_state = "accepted"
+                self.pending_by_size[size_index] = [
+                    level_id for level_id in self.pending_by_size[size_index] if level_id != task.growth_level_id
+                ]
+                self.accepted_by_size[size_index].append(task.growth_level_id)
+            state.growth_completed_counts[size_index] = state.growth_completed_counts.get(size_index, 0) + 1
+            if not is_failure_status(row.status):
+                state.growth_max_nonfailure_size = max(state.growth_max_nonfailure_size, min(row.rows, row.cols))
+            return GrowthCompletion(counts_toward_progress=True)
+
+        state.growth_reserved_counts[size_index] = max(0, state.growth_reserved_counts.get(size_index, 0) - 1)
+        state.growth_completed_counts[size_index] = state.growth_completed_counts.get(size_index, 0) + 1
+        if not is_failure_status(row.status):
+            state.growth_max_nonfailure_size = max(state.growth_max_nonfailure_size, min(row.rows, row.cols))
+        return GrowthCompletion(counts_toward_progress=True)
+
+    def minimum_target_met_for_state(self, state: PairState) -> bool:
+        if not self.enabled():
+            return True
+        return self.mandatory_remaining_for_state(state) == 0
+
+    def mandatory_remaining_for_state(self, state: PairState) -> int:
+        if not self.enabled() or state.growth_blocked:
+            return 0
+        max_allowed = self.max_allowed_size_index_for_state(state)
+        if max_allowed < 0:
+            return 0
+        remaining = 0
+        for size_index in range(max_allowed + 1):
+            remaining += max(0, self.config.min_variants_per_size - state.growth_completed_counts.get(size_index, 0))
+        return remaining
+
+    def has_potential_work_for_state(self, state: PairState) -> bool:
+        if not self.enabled() or state.growth_blocked:
+            return False
+        if self.max_allowed_size_index_for_state(state) < 0:
+            return False
+        if self.config.continuous_after_minimum:
+            return True
+        return self.mandatory_remaining_for_state(state) > 0
+
+    def growth_counts_summary(self) -> Dict[str, Dict[str, int]]:
+        summary: Dict[str, Dict[str, int]] = {}
+        for size_index, (rows, cols) in enumerate(self.config.sizes):
+            summary[f"{rows}x{cols}"] = {
+                "generated": self.generated_counts[size_index],
+                "accepted": len(self.accepted_by_size[size_index]),
+                "pending": len([rid for rid in self.pending_by_size[size_index] if self.records_by_id[rid].validator_state in {"pending", "running"}]),
+                "rejected": self.rejected_counts[size_index],
+            }
+        return summary
 
 
 def read_source_name(domain: Path) -> Optional[str]:
@@ -1489,6 +2133,19 @@ def build_pairings(settings: Sequence[PlannerSetting], domains: Sequence[DomainI
     return pairings
 
 
+def pick_validator_pairing_id(pairings: Sequence[Pairing]) -> Optional[str]:
+    validator_pairings = [p for p in pairings if p.setting.validator]
+    if not validator_pairings:
+        return None
+    if len(validator_pairings) > 1:
+        labels = ", ".join(f"{p.setting.name}/{p.domain.path.name}" for p in validator_pairings)
+        raise ValueError(
+            "Exactly one validator pairing is supported per run. Narrow your planner_settings "
+            f"filters so only one pairing has validator=true. Matched: {labels}"
+        )
+    return validator_pairings[0].id
+
+
 def make_run_task(
     state: PairState,
     *,
@@ -1510,7 +2167,7 @@ def next_noncustom_task_for_state(
     state: PairState,
     *,
     random_repeat_levels: Sequence[LevelInfo],
-    growth_levels: Sequence[LevelInfo],
+    growth_manager: GrowthManager,
     run_id: int,
     active_custom_min_cells: Optional[int] = None,
     only_smaller_while_custom_running: bool = False,
@@ -1521,9 +2178,9 @@ def next_noncustom_task_for_state(
     if state.random_repeat_index < len(random_repeat_levels):
         level = random_repeat_levels[state.random_repeat_index]
         candidates.append(make_run_task(state, run_id=run_id, level=level, phase="random-repeat"))
-    if state.growth_index < len(growth_levels):
-        level = growth_levels[state.growth_index]
-        candidates.append(make_run_task(state, run_id=run_id, level=level, phase="growth"))
+    growth_task = growth_manager.make_task_for_state(state, run_id=run_id)
+    if growth_task is not None:
+        candidates.append(growth_task)
 
     if active_custom_min_cells is not None:
         if noncustom_max_cells_while_custom_running is not None:
@@ -1556,7 +2213,7 @@ def next_task_for_state(
     *,
     custom_levels: Sequence[LevelInfo],
     random_repeat_levels: Sequence[LevelInfo],
-    growth_levels: Sequence[LevelInfo],
+    growth_manager: GrowthManager,
     run_id: int,
     custom_levels_run_last: bool,
     custom_levels_require_growth_past_size: Optional[int],
@@ -1576,7 +2233,7 @@ def next_task_for_state(
             task = next_noncustom_task_for_state(
                 state,
                 random_repeat_levels=random_repeat_levels,
-                growth_levels=growth_levels,
+                growth_manager=growth_manager,
                 run_id=run_id,
                 active_custom_min_cells=active_custom_min_cells,
                 only_smaller_while_custom_running=only_smaller_while_custom_running,
@@ -1593,7 +2250,7 @@ def next_task_for_state(
         return next_noncustom_task_for_state(
             state,
             random_repeat_levels=random_repeat_levels,
-            growth_levels=growth_levels,
+            growth_manager=growth_manager,
             run_id=run_id,
             active_custom_min_cells=active_custom_min_cells,
             only_smaller_while_custom_running=only_smaller_while_custom_running,
@@ -1609,18 +2266,18 @@ def next_task_for_state(
             state.phase = "growth"
 
         if state.phase == "growth":
-            if state.growth_index < len(growth_levels):
-                level = growth_levels[state.growth_index]
-                return make_run_task(state, run_id=run_id, level=level, phase="growth")
+            task = growth_manager.make_task_for_state(state, run_id=run_id)
+            if task is not None:
+                return task
 
             custom_gate_ok = True
             if custom_levels_require_growth_past_size is not None:
                 custom_gate_ok = (
                     state.growth_max_nonfailure_size > custom_levels_require_growth_past_size
                 )
-            if custom_gate_ok:
+            if growth_manager.minimum_target_met_for_state(state) and custom_gate_ok:
                 state.phase = "custom"
-            else:
+            elif growth_manager.minimum_target_met_for_state(state) and not growth_manager.is_continuous_active():
                 state.pending_excluded_runs += max(0, len(custom_levels) - state.custom_index)
                 state.custom_index = len(custom_levels)
                 state.done = True
@@ -1630,7 +2287,10 @@ def next_task_for_state(
             if state.custom_index < len(custom_levels):
                 level = custom_levels[state.custom_index]
                 return make_run_task(state, run_id=run_id, level=level, phase="custom")
-            state.done = True
+            if growth_manager.is_continuous_active() and not state.growth_blocked:
+                state.phase = "growth"
+            else:
+                state.done = True
             return None
 
         state.done = True
@@ -1649,10 +2309,17 @@ def next_task_for_state(
         state.phase = "growth"
 
     if state.phase == "growth":
-        if state.growth_index < len(growth_levels):
-            level = growth_levels[state.growth_index]
-            return make_run_task(state, run_id=run_id, level=level, phase="growth")
-        state.done = True
+        task = growth_manager.make_task_for_state(state, run_id=run_id)
+        if task is not None:
+            return task
+        if growth_manager.is_continuous_active() and not state.growth_blocked:
+            return None
+        if (
+            growth_manager.minimum_target_met_for_state(state)
+            or not growth_manager.enabled()
+            or growth_manager.is_generation_frozen()
+        ):
+            state.done = True
         return None
 
     state.done = True
@@ -1662,51 +2329,20 @@ def next_task_for_state(
 def advance_state_after_result(
     state: PairState,
     *,
+    task: RunTask,
     row: BenchRow,
     custom_fail_limit: int,
     growth_stop_on_failure: bool,
     custom_levels_count: int,
     random_repeat_levels_count: int,
-    growth_levels_count: int,
+    growth_manager: GrowthManager,
     custom_levels_run_last: bool,
     custom_levels_require_growth_past_size: Optional[int],
     random_repeat_failure_stops_pair_repeats: bool,
     interleave_smaller_noncustom_with_custom: bool = False,
+    growth_counted: bool = True,
 ) -> int:
     excluded_runs = 0
-    if interleave_smaller_noncustom_with_custom and not custom_levels_run_last:
-        if row.phase == "custom":
-            state.custom_index += 1
-            if is_failure_status(row.status):
-                state.custom_fail_streak += 1
-            else:
-                state.custom_fail_streak = 0
-            if state.custom_fail_streak >= custom_fail_limit:
-                excluded_runs += max(0, custom_levels_count - state.custom_index)
-                state.custom_index = custom_levels_count
-        elif row.phase == "random-repeat":
-            state.random_repeat_index += 1
-            if random_repeat_failure_stops_pair_repeats and is_failure_status(row.status):
-                excluded_runs += max(0, random_repeat_levels_count - state.random_repeat_index)
-                state.random_repeat_index = random_repeat_levels_count
-        elif row.phase == "growth":
-            if not is_failure_status(row.status):
-                state.growth_max_nonfailure_size = max(
-                    state.growth_max_nonfailure_size,
-                    min(row.rows, row.cols),
-                )
-            state.growth_index += 1
-            if growth_stop_on_failure and is_failure_status(row.status):
-                excluded_runs += max(0, growth_levels_count - state.growth_index)
-                state.growth_index = growth_levels_count
-
-        state.done = (
-            state.custom_index >= custom_levels_count
-            and state.random_repeat_index >= random_repeat_levels_count
-            and state.growth_index >= growth_levels_count
-        )
-        return excluded_runs
-
     if row.phase == "custom":
         state.custom_index += 1
         if is_failure_status(row.status):
@@ -1727,27 +2363,76 @@ def advance_state_after_result(
             state.random_repeat_index = random_repeat_levels_count
             state.phase = "growth"
     elif row.phase == "growth":
-        if not is_failure_status(row.status):
-            state.growth_max_nonfailure_size = max(
-                state.growth_max_nonfailure_size,
-                min(row.rows, row.cols),
+        if (
+            growth_counted
+            and growth_stop_on_failure
+            and is_failure_status(row.status)
+            and task.pairing_id != growth_manager.validator_pairing_id
+            and task.growth_size_index is not None
+        ):
+            excluded_runs += growth_manager.cap_state_to_smaller_sizes(
+                state,
+                failed_size_index=task.growth_size_index,
             )
-        state.growth_index += 1
-        if growth_stop_on_failure and is_failure_status(row.status):
-            excluded_runs += max(0, growth_levels_count - state.growth_index)
-            state.done = True
-        elif custom_levels_run_last and state.growth_index >= growth_levels_count:
+        if custom_levels_run_last and growth_manager.minimum_target_met_for_state(state):
             custom_gate_ok = True
             if custom_levels_require_growth_past_size is not None:
                 custom_gate_ok = (
                     state.growth_max_nonfailure_size > custom_levels_require_growth_past_size
                 )
             if custom_gate_ok:
+                if state.custom_index < custom_levels_count:
+                    state.phase = "custom"
+                elif not growth_manager.is_continuous_active() or state.growth_blocked:
+                    state.done = True
+            elif not growth_manager.is_continuous_active():
+                excluded_runs += max(0, custom_levels_count - state.custom_index)
+                state.custom_index = custom_levels_count
+                state.done = True
+
+    if interleave_smaller_noncustom_with_custom and not custom_levels_run_last:
+        growth_done = state.growth_blocked or (
+            growth_manager.minimum_target_met_for_state(state) and not growth_manager.is_continuous_active()
+        )
+        state.done = (
+            state.custom_index >= custom_levels_count
+            and state.random_repeat_index >= random_repeat_levels_count
+            and growth_done
+        )
+        return excluded_runs
+
+    if custom_levels_run_last:
+        if state.phase == "random-repeat" and state.random_repeat_index >= random_repeat_levels_count:
+            state.phase = "growth"
+        if state.phase == "growth" and state.growth_blocked and not growth_manager.is_continuous_active():
+            custom_gate_ok = (
+                custom_levels_require_growth_past_size is None
+                or state.growth_max_nonfailure_size > custom_levels_require_growth_past_size
+            )
+            if custom_gate_ok and state.custom_index < custom_levels_count:
                 state.phase = "custom"
+            elif custom_gate_ok:
+                state.done = True
             else:
                 excluded_runs += max(0, custom_levels_count - state.custom_index)
                 state.custom_index = custom_levels_count
                 state.done = True
+        if state.phase == "custom" and state.custom_index >= custom_levels_count:
+            if growth_manager.is_continuous_active() and not state.growth_blocked:
+                state.phase = "growth"
+            else:
+                state.done = True
+        return excluded_runs
+
+    if state.phase == "custom" and state.custom_index >= custom_levels_count:
+        state.phase = "random-repeat"
+    if state.phase == "random-repeat" and state.random_repeat_index >= random_repeat_levels_count:
+        state.phase = "growth"
+    if state.phase == "growth":
+        if state.growth_blocked:
+            state.done = True
+        elif growth_manager.minimum_target_met_for_state(state) and not growth_manager.is_continuous_active():
+            state.done = True
     return excluded_runs
 
 
@@ -1756,7 +2441,7 @@ def remaining_base_runs_for_state(
     *,
     custom_levels_count: int,
     random_repeat_levels_count: int,
-    growth_levels_count: int,
+    growth_manager: GrowthManager,
     custom_levels_run_last: bool,
     custom_levels_require_growth_past_size: Optional[int],
     interleave_smaller_noncustom_with_custom: bool = False,
@@ -1764,22 +2449,24 @@ def remaining_base_runs_for_state(
     if state.done:
         return 0
     remaining = 0
+    growth_left = growth_manager.mandatory_remaining_for_state(state)
+    if growth_manager.is_continuous_active() and not state.growth_blocked:
+        growth_left = max(1, growth_left)
     if interleave_smaller_noncustom_with_custom and not custom_levels_run_last:
         remaining += max(0, custom_levels_count - state.custom_index)
         remaining += max(0, random_repeat_levels_count - state.random_repeat_index)
-        remaining += max(0, growth_levels_count - state.growth_index)
+        remaining += growth_left
         return remaining
 
     if custom_levels_run_last:
         if state.phase == "random-repeat":
             remaining += max(0, random_repeat_levels_count - state.random_repeat_index)
-            remaining += max(0, growth_levels_count - state.growth_index)
+            remaining += growth_left
             remaining += max(0, custom_levels_count - state.custom_index)
             return remaining
         if state.phase == "growth":
-            growth_left = max(0, growth_levels_count - state.growth_index)
             remaining += growth_left
-            if growth_left > 0:
+            if growth_left > 0 or growth_manager.is_continuous_active():
                 remaining += max(0, custom_levels_count - state.custom_index)
             elif (
                 custom_levels_require_growth_past_size is None
@@ -1795,14 +2482,14 @@ def remaining_base_runs_for_state(
     if state.phase == "custom":
         remaining += max(0, custom_levels_count - state.custom_index)
         remaining += max(0, random_repeat_levels_count - state.random_repeat_index)
-        remaining += max(0, growth_levels_count - state.growth_index)
+        remaining += growth_left
         return remaining
     if state.phase == "random-repeat":
         remaining += max(0, random_repeat_levels_count - state.random_repeat_index)
-        remaining += max(0, growth_levels_count - state.growth_index)
+        remaining += growth_left
         return remaining
     if state.phase == "growth":
-        remaining += max(0, growth_levels_count - state.growth_index)
+        remaining += growth_left
         return remaining
     return 0
 
@@ -1876,8 +2563,9 @@ def main() -> int:
         description=(
             "Run planner settings from a JSON config across compatible test domains, "
             "with custom-level fail streak cutoff, optional random-repeat maps, "
-            "optional repeats for solved instances, optional random-repeat early-stop, "
-            "optional custom-level run-last growth gating, and growth-level timeout cutoff."
+            "optional repeats for solved instances, validator-first growth generation, "
+            "per-size growth variants, optional continuous growth after the minimum, "
+            "and optional custom-level run-last growth gating."
         )
     )
     ap.add_argument(
@@ -2030,8 +2718,18 @@ def main() -> int:
             run_dir=run_dir,
             config_seed=seed,
         )
-        growth_levels = collect_growth_levels(config=cfg, run_dir=run_dir)
+        growth_config = parse_growth_config(
+            config=cfg,
+            config_seed=seed,
+            default_timeout=default_timeout,
+        )
         pairings = build_pairings(settings, domains)
+        validator_pairing_id = pick_validator_pairing_id(pairings)
+        growth_manager = GrowthManager(
+            config=growth_config,
+            run_dir=run_dir,
+            validator_pairing_id=validator_pairing_id,
+        )
     except Exception as exc:
         print(f"[ERR] Config validation failed: {exc}", file=sys.stderr)
         return 2
@@ -2060,23 +2758,33 @@ def main() -> int:
         print("[WARN] stream=true with parallel runs can interleave logs.")
 
     rng = random.Random(seed)
-
-    max_matrix_runs = len(pairings) * (
-        len(custom_levels) + len(random_repeat_levels) + len(growth_levels)
+    growth_parallel_per_pair = min(max_parallel, growth_manager.max_parallel_per_pair())
+    mandatory_base_runs = len(pairings) * (
+        len(custom_levels) + len(random_repeat_levels) + growth_manager.mandatory_levels_per_pair()
     )
-    max_matrix_runs_with_repeats_upper = max_matrix_runs * (1 + repeat_successful_runs)
+    mandatory_runs_with_repeats_lower = mandatory_base_runs * (1 + repeat_successful_runs)
     n_classic = sum(d.kind == "classic" for d in domains)
     n_fa = sum(d.kind == "fa" for d in domains)
     n_plus = sum(d.kind == "plus" for d in domains)
+    validator_label = "disabled"
+    if validator_pairing_id is not None:
+        validator_pairing = next((p for p in pairings if p.id == validator_pairing_id), None)
+        if validator_pairing is not None:
+            validator_label = f"{validator_pairing.setting.name} / {validator_pairing.domain.path.name}"
     print(f"[INFO] Config: {config_path}")
     print(f"[INFO] Pairings: {len(pairings)}")
     print(f"[INFO] Domains: {len(domains)} (classic={n_classic}, fa={n_fa}, plus={n_plus})")
     print(f"[INFO] Planner settings: {len(settings)}")
     print(f"[INFO] Custom levels: {len(custom_levels)}")
     print(f"[INFO] Random repeat levels: {len(random_repeat_levels)}")
-    print(f"[INFO] Growth levels: {len(growth_levels)}")
-    print(f"[INFO] Max matrix runs (upper bound): {max_matrix_runs}")
-    print(f"[INFO] Max matrix runs incl repeats (upper bound): {max_matrix_runs_with_repeats_upper}")
+    print(f"[INFO] Growth sizes: {growth_manager.size_count()}")
+    print(f"[INFO] Growth min variants per size: {growth_config.min_variants_per_size}")
+    print(f"[INFO] Growth continues after minimum: {growth_config.continuous_after_minimum}")
+    print(f"[INFO] Growth unlocked sizes ahead: {growth_config.parallel_sizes_ahead}")
+    print(f"[INFO] Growth max parallel runs per pair: {growth_parallel_per_pair}")
+    print(f"[INFO] Growth validator: {validator_label}")
+    print(f"[INFO] Mandatory matrix runs (lower bound): {mandatory_base_runs}")
+    print(f"[INFO] Mandatory runs incl repeats (lower bound): {mandatory_runs_with_repeats_lower}")
     print(f"[INFO] Repeat solved instances: {repeat_successful_runs}")
     print(f"[INFO] Custom levels run last: {custom_levels_run_last}")
     print(
@@ -2117,11 +2825,13 @@ def main() -> int:
             phase=("random-repeat" if custom_levels_run_last else "custom"),
             custom_index=0,
             random_repeat_index=0,
-            growth_index=0,
             custom_fail_streak=0,
             growth_max_nonfailure_size=0,
             pending_excluded_runs=0,
-            in_flight=False,
+            non_growth_in_flight=False,
+            growth_in_flight=0,
+            growth_blocked=False,
+            growth_max_allowed_size_index=None,
             done=False,
         )
         for p in pairings
@@ -2154,18 +2864,34 @@ def main() -> int:
         "only_smaller_while_custom_running": only_smaller_while_custom_running,
         "noncustom_percent_smaller_than_custom": noncustom_percent_smaller_than_custom,
         "noncustom_max_size_while_custom_running": noncustom_max_cells_while_custom_running,
+        "validator_pairing_id": validator_pairing_id,
+        "growth_config": {
+            "enabled": growth_config.enabled,
+            "sizes": [f"{r}x{c}" for r, c in growth_config.sizes],
+            "required_gems": growth_config.required_gems,
+            "max_time_min": growth_config.max_time_min,
+            "max_time_scale": growth_config.max_time_scale,
+            "min_variants_per_size": growth_config.min_variants_per_size,
+            "continuous_after_minimum": growth_config.continuous_after_minimum,
+            "parallel_sizes_ahead": growth_config.parallel_sizes_ahead,
+            "max_parallel_per_pair": growth_config.max_parallel_per_pair,
+            "standard_timeout_sec": growth_config.standard_timeout_sec,
+            "validator_timeout_multiplier": growth_config.validator_timeout_multiplier,
+            "seed": growth_config.seed,
+        },
         "domains": [str(d.path) for d in domains],
         "settings": [asdict(s) | {"enhsp_jar": str(s.enhsp_jar) if s.enhsp_jar else None, "optic_bin": str(s.optic_bin) if s.optic_bin else None, "problem_gen": str(s.problem_gen) if s.problem_gen else None} for s in settings],
         "custom_levels": [str(l.path) for l in custom_levels],
         "random_repeat_levels": [str(l.path) for l in random_repeat_levels],
-        "growth_levels": [str(l.path) for l in growth_levels],
+        "growth_stats": growth_manager.growth_counts_summary(),
     }
     (run_dir / "run_metadata.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
 
     # Ensure a CSV exists from the beginning so partial results survive interruptions.
     write_csv(output_csv, [])
 
-    stop_requested = False
+    drain_requested = False
+    hard_stop_requested = False
     interrupted = False
     signal_hits = 0
 
@@ -2173,14 +2899,16 @@ def main() -> int:
     old_sigterm = signal.getsignal(signal.SIGTERM)
 
     def handle_stop(sig: int, _frame: Any) -> None:
-        nonlocal stop_requested, interrupted, signal_hits
+        nonlocal drain_requested, interrupted, signal_hits
         signal_hits += 1
         interrupted = True
-        stop_requested = True
         name = signal.Signals(sig).name
         if signal_hits == 1:
+            drain_requested = True
+            growth_manager.freeze_generation()
             print(
-                f"[WARN] Received {name}. Stopping new scheduling and preserving partial CSV progress."
+                f"[WARN] Received {name}. Freezing growth generation and repeat expansion; "
+                "already queued work will drain before exit."
             )
             return
         raise KeyboardInterrupt
@@ -2188,25 +2916,27 @@ def main() -> int:
     signal.signal(signal.SIGINT, handle_stop)
     signal.signal(signal.SIGTERM, handle_stop)
 
-    base_max_runs = max_matrix_runs
-
-    def effective_base_runs_total() -> int:
-        # Include runs marked for exclusion but not yet applied to the global counter.
+    def mandatory_base_runs_remaining() -> int:
         pending_exclusions = sum(st.pending_excluded_runs for st in states.values())
-        return max(0, base_max_runs - excluded_base_runs - pending_exclusions)
-
-    def progress_totals() -> Tuple[int, int]:
-        base_effective_total = effective_base_runs_total()
-        unresolved_base_runs = max(0, base_effective_total - base_runs_completed)
-        # Project repeats for solved base runs plus unresolved base runs that may still solve.
-        projected_repeat_runs = (base_runs_solved + unresolved_base_runs) * repeat_successful_runs
-        total_effective_runs = max(completed, base_effective_total + projected_repeat_runs)
-        remaining_instances = max(0, total_effective_runs - completed)
-        return total_effective_runs, remaining_instances
+        remaining = sum(
+            remaining_base_runs_for_state(
+                st,
+                custom_levels_count=len(custom_levels),
+                random_repeat_levels_count=len(random_repeat_levels),
+                growth_manager=growth_manager,
+                custom_levels_run_last=custom_levels_run_last,
+                custom_levels_require_growth_past_size=custom_levels_require_growth_past_size,
+                interleave_smaller_noncustom_with_custom=interleave_smaller_noncustom_with_custom,
+            )
+            for st in states.values()
+        )
+        return max(0, remaining - pending_exclusions)
 
     def estimate_remaining_timeout_sec(
         future_to_ctx: Dict[concurrent.futures.Future[TaskResult], Tuple[str, RunTask]],
-    ) -> float:
+    ) -> Optional[float]:
+        if growth_manager.is_continuous_active():
+            return None
         timeout_sum = 0.0
         for _pid, running_task in future_to_ctx.values():
             timeout_sum += float(running_task.setting.timeout_sec)
@@ -2218,7 +2948,7 @@ def main() -> int:
                 st,
                 custom_levels_count=len(custom_levels),
                 random_repeat_levels_count=len(random_repeat_levels),
-                growth_levels_count=len(growth_levels),
+                growth_manager=growth_manager,
                 custom_levels_run_last=custom_levels_run_last,
                 custom_levels_require_growth_past_size=custom_levels_require_growth_past_size,
                 interleave_smaller_noncustom_with_custom=interleave_smaller_noncustom_with_custom,
@@ -2258,40 +2988,85 @@ def main() -> int:
                 return task.level.cells < max_cells_exclusive
         return True
 
+    def state_can_start_task(state: PairState, task: RunTask) -> bool:
+        if task.phase == "growth":
+            return state.growth_in_flight < growth_parallel_per_pair
+        return not state.non_growth_in_flight and state.growth_in_flight == 0
+
+    def next_drain_task_for_state(
+        state: PairState,
+        *,
+        run_id: int,
+    ) -> Optional[RunTask]:
+        if state.done:
+            return None
+        if state.phase != "growth":
+            return None
+        return growth_manager.make_task_for_state(state, run_id=run_id)
+
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_parallel) as ex:
             future_to_ctx: Dict[concurrent.futures.Future[TaskResult], Tuple[str, RunTask]] = {}
 
             while True:
                 blocked_ready: List[str] = []
-                while (not stop_requested) and len(future_to_ctx) < max_parallel and ready:
+                while (not hard_stop_requested) and len(future_to_ctx) < max_parallel and ready:
                     rng.shuffle(ready)
                     pid = ready.pop()
                     st = states[pid]
-                    if st.in_flight:
-                        continue
 
                     task: Optional[RunTask] = None
                     active_custom_runs, active_custom_min_cells = active_custom_dispatch_state(
                         future_to_ctx
                     )
-                    if repeat_queues[pid]:
+                    if (
+                        not drain_requested
+                        and (
+                        pid == validator_pairing_id
+                        and st.phase == "growth"
+                        and st.growth_in_flight < growth_parallel_per_pair
+                        )
+                    ):
+                        validator_growth_task = growth_manager.make_task_for_state(
+                            st,
+                            run_id=run_counter + 1,
+                        )
+                        if validator_growth_task is not None:
+                            if task_allowed_by_custom_policy(
+                                validator_growth_task,
+                                active_custom_runs=active_custom_runs,
+                                active_custom_min_cells=active_custom_min_cells,
+                            ):
+                                task = validator_growth_task
+                            else:
+                                blocked_ready.append(pid)
+                                continue
+
+                    if task is None and repeat_queues[pid]:
                         queued_task = repeat_queues[pid][0]
-                        if task_allowed_by_custom_policy(
-                            queued_task,
-                            active_custom_runs=active_custom_runs,
-                            active_custom_min_cells=active_custom_min_cells,
+                        if (
+                            state_can_start_task(st, queued_task)
+                            and task_allowed_by_custom_policy(
+                                queued_task,
+                                active_custom_runs=active_custom_runs,
+                                active_custom_min_cells=active_custom_min_cells,
+                            )
                         ):
                             task = repeat_queues[pid].pop(0)
                         else:
                             blocked_ready.append(pid)
                             continue
-                    elif not st.done:
+                    elif task is None and drain_requested:
+                        task = next_drain_task_for_state(
+                            st,
+                            run_id=run_counter + 1,
+                        )
+                    elif task is None and not st.done:
                         task = next_task_for_state(
                             st,
                             custom_levels=custom_levels,
                             random_repeat_levels=random_repeat_levels,
-                            growth_levels=growth_levels,
+                            growth_manager=growth_manager,
                             run_id=run_counter + 1,
                             custom_levels_run_last=custom_levels_run_last,
                             custom_levels_require_growth_past_size=custom_levels_require_growth_past_size,
@@ -2304,11 +3079,17 @@ def main() -> int:
                             noncustom_max_cells_while_custom_running=noncustom_max_cells_while_custom_running,
                         )
                     if task is None:
+                        if drain_requested:
+                            if st.pending_excluded_runs > 0:
+                                excluded_base_runs += st.pending_excluded_runs
+                                st.pending_excluded_runs = 0
+                            st.done = True
+                            continue
                         if remaining_base_runs_for_state(
                             st,
                             custom_levels_count=len(custom_levels),
                             random_repeat_levels_count=len(random_repeat_levels),
-                            growth_levels_count=len(growth_levels),
+                            growth_manager=growth_manager,
                             custom_levels_run_last=custom_levels_run_last,
                             custom_levels_require_growth_past_size=custom_levels_require_growth_past_size,
                             interleave_smaller_noncustom_with_custom=interleave_smaller_noncustom_with_custom,
@@ -2320,6 +3101,9 @@ def main() -> int:
                             st.pending_excluded_runs = 0
                         st.done = True
                         continue
+                    if not state_can_start_task(st, task):
+                        blocked_ready.append(pid)
+                        continue
                     if not task_allowed_by_custom_policy(
                         task,
                         active_custom_runs=active_custom_runs,
@@ -2330,7 +3114,10 @@ def main() -> int:
 
                     if not repeat_queues[pid] or task.repeat_index == 0:
                         run_counter = max(run_counter, task.run_id)
-                    st.in_flight = True
+                    if task.phase == "growth":
+                        growth_manager.reserve_task(st, task)
+                    else:
+                        st.non_growth_in_flight = True
                     fut = ex.submit(
                         run_single_task,
                         task,
@@ -2338,6 +3125,9 @@ def main() -> int:
                         dry_run=args.dry_run,
                     )
                     future_to_ctx[fut] = (pid, task)
+                    if task.phase == "growth" and (repeat_queues[pid] or not st.done):
+                        if st.growth_in_flight < growth_parallel_per_pair:
+                            ready.append(pid)
                 if blocked_ready:
                     ready.extend(blocked_ready)
 
@@ -2352,8 +3142,8 @@ def main() -> int:
                     )
                 except KeyboardInterrupt:
                     interrupted = True
-                    stop_requested = True
-                    print("[WARN] Termination requested. Waiting for running tasks to finish; no new tasks will start.")
+                    hard_stop_requested = True
+                    print("[WARN] Second interrupt received. Waiting for running tasks to finish; no new tasks will start.")
                     continue
 
                 if not done:
@@ -2362,7 +3152,6 @@ def main() -> int:
                 for fut in done:
                     pid, submitted_task = future_to_ctx.pop(fut)
                     st = states[pid]
-                    st.in_flight = False
                     completed += 1
 
                     try:
@@ -2439,8 +3228,21 @@ def main() -> int:
                             error_message=str(exc),
                         )
 
+                    if completed_task.phase == "growth":
+                        growth_completion = growth_manager.complete_task(st, completed_task, row)
+                    else:
+                        st.non_growth_in_flight = False
+                        growth_completion = GrowthCompletion(counts_toward_progress=(completed_task.repeat_index == 0))
+
                     rows.append(row)
                     append_csv_rows(output_csv, [row])
+
+                    if growth_completion.validator_rejected:
+                        print(
+                            "[INFO] Validator rejected generated level "
+                            f"{Path(row.level).name if row.level else '-'} for "
+                            f"{row.planner_setting} / {Path(row.domain).name}; a replacement will be generated."
+                        )
 
                     if (
                         random_repeat_failure_stops_pair_repeats
@@ -2456,23 +3258,32 @@ def main() -> int:
                         )
 
                     if completed_task.repeat_index == 0:
-                        base_runs_completed += 1
-                        if is_success_status(row.status):
+                        if growth_completion.counts_toward_progress:
+                            base_runs_completed += 1
+                        if growth_completion.counts_toward_progress and is_success_status(row.status):
                             base_runs_solved += 1
                         excluded_base_runs += advance_state_after_result(
                             st,
+                            task=completed_task,
                             row=row,
                             custom_fail_limit=custom_fail_limit,
                             growth_stop_on_failure=growth_stop_on_failure,
                             custom_levels_count=len(custom_levels),
                             random_repeat_levels_count=len(random_repeat_levels),
-                            growth_levels_count=len(growth_levels),
+                            growth_manager=growth_manager,
                             custom_levels_run_last=custom_levels_run_last,
                             custom_levels_require_growth_past_size=custom_levels_require_growth_past_size,
                             random_repeat_failure_stops_pair_repeats=random_repeat_failure_stops_pair_repeats,
                             interleave_smaller_noncustom_with_custom=interleave_smaller_noncustom_with_custom,
+                            growth_counted=growth_completion.counts_toward_progress,
                         )
-                        if repeat_successful_runs > 0 and is_success_status(row.status):
+                        if (
+                            not drain_requested
+                            and
+                            repeat_successful_runs > 0
+                            and growth_completion.counts_toward_progress
+                            and is_success_status(row.status)
+                        ):
                             for rep_idx in range(1, repeat_successful_runs + 1):
                                 run_counter += 1
                                 repeat_queues[pid].append(
@@ -2484,22 +3295,36 @@ def main() -> int:
                                         level=completed_task.level,
                                         phase=completed_task.phase,
                                         repeat_index=rep_idx,
+                                        growth_level_id=completed_task.growth_level_id,
+                                        growth_size_index=completed_task.growth_size_index,
                                     )
                                 )
 
                     if repeat_queues[pid] or not st.done:
                         ready.append(pid)
 
-                    total_effective_runs, remaining_instances = progress_totals()
+                    remaining_instances = mandatory_base_runs_remaining()
                     remaining_timeout_sec = estimate_remaining_timeout_sec(future_to_ctx)
-                    eta_parallel_upper_sec = remaining_timeout_sec / max(1, max_parallel)
+                    if remaining_timeout_sec is None:
+                        eta_text = "eta<=unbounded"
+                    else:
+                        eta_parallel_upper_sec = remaining_timeout_sec / max(1, max_parallel)
+                        eta_text = (
+                            f"eta<={format_eta_hms(eta_parallel_upper_sec)} "
+                            f"(timeout-sum={format_eta_hms(remaining_timeout_sec)})"
+                        )
+                    if drain_requested:
+                        remaining_label = "draining-queued-work"
+                    else:
+                        remaining_label = f"mandatory-left={remaining_instances}"
+                        if growth_manager.is_continuous_active():
+                            remaining_label += " + continuous-growth"
                     print(
-                        f"[{completed}/{total_effective_runs}] {Path(row.domain).name} | "
+                        f"[{completed}] {Path(row.domain).name} | "
                         f"{Path(row.level).name if row.level else '-'} | {row.planner_setting}"
                         f"{f' [rep {row.repeat_index}]' if row.repeat_index > 0 else ''} -> {row.status} | "
-                        f"measured={row.measured_total_sec:.3f}s | remaining={remaining_instances} | "
-                        f"eta<={format_eta_hms(eta_parallel_upper_sec)} "
-                        f"(timeout-sum={format_eta_hms(remaining_timeout_sec)})"
+                        f"measured={row.measured_total_sec:.3f}s | {remaining_label} | "
+                        f"{eta_text}"
                     )
     finally:
         signal.signal(signal.SIGINT, old_sigint)
@@ -2517,17 +3342,23 @@ def main() -> int:
         )
     )
     write_csv(output_csv, rows)
+    run_meta["growth_stats"] = growth_manager.growth_counts_summary()
+    (run_dir / "run_metadata.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
 
     print(f"[OK] Wrote CSV: {output_csv}")
     print(f"[OK] Rows: {len(rows)}")
     print(f"[OK] Status counts: {status_summary(rows)}")
+    print(f"[OK] Growth stats: {json.dumps(growth_manager.growth_counts_summary(), sort_keys=True)}")
     plots_generated = 0
     if not args.skip_plots and rows:
         plots_generated = generate_plots(output_csv, plots_dir)
     print(f"[OK] Plots generated: {plots_generated}")
     print(f"[OK] Artifacts: {run_dir}")
     if interrupted:
-        print("[WARN] Run interrupted. Partial results were preserved in CSV during execution.")
+        if drain_requested and not hard_stop_requested:
+            print("[WARN] Run interrupted gracefully. Growth generation was frozen and queued work was drained before exit.")
+        else:
+            print("[WARN] Run interrupted. Partial results were preserved in CSV during execution.")
         return 130
     return 0
 

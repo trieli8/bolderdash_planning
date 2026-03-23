@@ -179,6 +179,20 @@ python tools/plot_plus_bench_runtime.py \
 - Outline color: domain (when multiple domains are present)
 - `timeout` and `error` rows are excluded by default (use `--include-failures` to include them)
 
+### Browse Level Folders
+
+```bash
+# Browse all level .txt files in a folder
+./view_levels_folder.sh pddl
+
+# Browse generated levels from a benchmark run
+./view_levels_folder.sh tools/benchmarking/results/config-matrix_20260323_001344/generated-levels
+```
+
+- Uses the native SDL Stones & Gems renderer rather than an ASCII fallback.
+- Shows the current level filename in the window title and logs the full path in the terminal when you change levels.
+- Use Left/Right or Up/Down arrows to move between levels, `Home`/`End` to jump, and `Esc`/`q` to quit.
+
 ### Plot PDDL+ timing breakdown
 
 ```bash

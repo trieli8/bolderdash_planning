@@ -5,6 +5,7 @@ import argparse
 import csv
 import html
 import math
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -68,6 +69,35 @@ def lin_map(v: float, src_min: float, src_max: float, dst_min: float, dst_max: f
     return dst_min + frac * (dst_max - dst_min)
 
 
+def log_map(v: float, src_min: float, src_max: float, dst_min: float, dst_max: float) -> float:
+    if v <= 0 or src_min <= 0 or src_max <= 0:
+        return (dst_min + dst_max) / 2.0
+    log_min = math.log10(src_min)
+    log_max = math.log10(src_max)
+    if log_max <= log_min:
+        return (dst_min + dst_max) / 2.0
+    frac = (math.log10(v) - log_min) / (log_max - log_min)
+    return dst_min + frac * (dst_max - dst_min)
+
+
+def power_of_ten_ticks(min_value: float, max_value: float) -> List[float]:
+    if min_value <= 0 or max_value <= 0:
+        return []
+    lo = int(math.floor(math.log10(min_value)))
+    hi = int(math.ceil(math.log10(max_value)))
+    return [10.0 ** exponent for exponent in range(lo, hi + 1)]
+
+
+def format_log_tick(value: float) -> str:
+    if value <= 0:
+        return "0"
+    if value >= 1000 and abs(value - round(value)) <= 1e-9:
+        return f"{int(round(value))}"
+    if value >= 1:
+        return f"{value:g}"
+    return f"{value:.3g}"
+
+
 def color_palette() -> List[str]:
     return [
         "#1f77b4",
@@ -97,6 +127,136 @@ def color_for_categories(cats: Sequence[str]) -> Dict[str, str]:
     return mapping
 
 
+DOMAIN_FAMILY_ORDER = ("classic", "fa", "plus")
+DOMAIN_SCANNER_ORDER = ("non-scanner", "scanner")
+DOMAIN_LAYOUT_ORDER = ("combined", "separated")
+DOMAIN_VARIANT_ORDER = tuple(
+    f"{scanner}|{layout}"
+    for scanner in DOMAIN_SCANNER_ORDER
+    for layout in DOMAIN_LAYOUT_ORDER
+)
+DOMAIN_FAMILY_COMPARE_COLORS = {
+    "classic": "#4e79a7",
+    "fa": "#f28e2b",
+    "plus": "#59a14f",
+}
+DOMAIN_VARIANT_RE = re.compile(
+    r"^domain_(?:(classic|fa|plus)_)?(scanner|non-scanner)_(combined|separated)"
+    r"(?:_(actions|events(?:_fluents)?))?$",
+    flags=re.IGNORECASE,
+)
+
+
+def normalize_domain_family(value: str) -> str:
+    lowered = (value or "").strip().lower()
+    if lowered in {"classic", "pddl"}:
+        return "classic"
+    if lowered == "fa":
+        return "fa"
+    if lowered in {"plus", "pddl+", "pddlplus"}:
+        return "plus"
+    return lowered or "unknown"
+
+
+def domain_family_compare_label(family: str) -> str:
+    fam = normalize_domain_family(family)
+    if fam == "classic":
+        return "PDDL"
+    if fam == "fa":
+        return "FA"
+    if fam == "plus":
+        return "PLUS"
+    return fam or "Unknown"
+
+
+def domain_scanner_label(scanner: str) -> str:
+    value = (scanner or "").strip().lower()
+    if value == "non-scanner":
+        return "Non-scanner"
+    if value == "scanner":
+        return "Scanner"
+    return value or "Unknown"
+
+
+def domain_layout_label(layout: str) -> str:
+    value = (layout or "").strip().lower()
+    if value == "combined":
+        return "Combined"
+    if value == "separated":
+        return "Separated"
+    return value or "Unknown"
+
+
+def domain_variant_key(scanner: str, layout: str) -> str:
+    scanner_value = (scanner or "").strip().lower()
+    layout_value = (layout or "").strip().lower()
+    if scanner_value not in DOMAIN_SCANNER_ORDER or layout_value not in DOMAIN_LAYOUT_ORDER:
+        return "unknown"
+    return f"{scanner_value}|{layout_value}"
+
+
+def domain_variant_label(variant: str) -> str:
+    value = (variant or "").strip().lower()
+    if "|" not in value:
+        return value or "Unknown"
+    scanner, layout = value.split("|", 1)
+    return f"{domain_scanner_label(scanner)} / {domain_layout_label(layout)}"
+
+
+def domain_compare_label(domain: str) -> str:
+    family, scanner, layout, encoding = parse_domain_variant(domain)
+    if family == "unknown" or scanner == "unknown" or layout == "unknown":
+        return domain or "Unknown"
+    parts = [
+        domain_family_compare_label(family),
+        domain_scanner_label(scanner),
+        domain_layout_label(layout),
+    ]
+    if encoding not in {"", "plain"}:
+        parts.append(encoding.replace("_", " ").title())
+    return " / ".join(parts)
+
+
+def parse_domain_variant(domain_stem: str) -> Tuple[str, str, str, str]:
+    match = DOMAIN_VARIANT_RE.match((domain_stem or "").strip())
+    if not match:
+        return "unknown", "unknown", "unknown", "unknown"
+    family = normalize_domain_family(match.group(1) or "classic")
+    scanner = ((match.group(2) or "").strip().lower() or "unknown")
+    layout = ((match.group(3) or "").strip().lower() or "unknown")
+    encoding = ((match.group(4) or "").strip().lower() or "plain")
+    if scanner not in DOMAIN_SCANNER_ORDER:
+        scanner = "unknown"
+    if layout not in DOMAIN_LAYOUT_ORDER:
+        layout = "unknown"
+    return family, scanner, layout, encoding
+
+
+def ordered_present_categories(
+    rows: Sequence[Dict[str, str]],
+    key: str,
+    preferred: Sequence[str],
+) -> List[str]:
+    preferred_set = set(preferred)
+    present = set()
+    for row in rows:
+        value = (row.get(key, "") or "").strip().lower()
+        if not value or value == "unknown":
+            continue
+        present.add(value)
+    ordered = [value for value in preferred if value in present]
+    ordered.extend(sorted(value for value in present if value not in preferred_set))
+    return ordered
+
+
+def domain_family_compare_colors(families: Sequence[str]) -> Dict[str, str]:
+    colors = color_for_categories(families)
+    for family, color in DOMAIN_FAMILY_COMPARE_COLORS.items():
+        if family in colors:
+            colors[family] = color
+    return colors
+
+
 def load_rows(csv_path: Path) -> List[Dict[str, str]]:
     with csv_path.open("r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -116,6 +276,17 @@ def annotate_row(row: Dict[str, str]) -> None:
     row["_runtime"] = str(safe_float(row.get("measured_total_sec", "")) or 0.0)
     row["_cells"] = str(safe_int(row.get("cells", "")) or 0)
     row["_run_id"] = str(safe_int(row.get("run_id", "")) or 0)
+    parsed_family, scanner_mode, layout_mode, encoding = parse_domain_variant(row["_domain"])
+    domain_kind = normalize_domain_family(row.get("domain_kind", ""))
+    if domain_kind != "unknown":
+        parsed_family = domain_kind
+    elif parsed_family == "unknown":
+        parsed_family = normalize_domain_family(row.get("planner_family", ""))
+    row["_domain_family"] = parsed_family
+    row["_domain_scanner"] = scanner_mode
+    row["_domain_layout"] = layout_mode
+    row["_domain_variant"] = domain_variant_key(scanner_mode, layout_mode)
+    row["_domain_encoding"] = encoding
 
 
 def svg_start(width: int, height: int, title: str, subtitle: str) -> List[str]:
@@ -552,6 +723,530 @@ def plot_success_rate_by_domain(rows: Sequence[Dict[str, str]], out_path: Path, 
     svg_finish(lines, out_path)
 
 
+def plot_success_rate_by_category(
+    rows: Sequence[Dict[str, str]],
+    out_path: Path,
+    subtitle: str,
+    *,
+    title: str,
+    category_key: str,
+    category_order: Sequence[str],
+    label_fn: Callable[[str], str],
+) -> None:
+    categories = ordered_present_categories(rows, category_key, category_order)
+    totals = Counter()
+    solved = Counter()
+    for row in rows:
+        category = (row.get(category_key, "") or "").strip().lower()
+        if category not in categories or not is_attempt_status(row["_status"]):
+            continue
+        totals[category] += 1
+        if row["_status"] == "solved":
+            solved[category] += 1
+    categories = [category for category in categories if totals[category] > 0]
+    if not categories:
+        return
+
+    if category_key == "_domain_family":
+        colors = domain_family_compare_colors(categories)
+    else:
+        colors = color_for_categories(categories)
+
+    width = max(820, 240 + 140 * len(categories))
+    height = 540
+    left = 80
+    top = 90
+    right = 120
+    bottom = 110
+    cw = width - left - right
+    ch = height - top - bottom
+
+    lines = svg_start(width, height, title, subtitle)
+    for i in range(6):
+        value = i * 20
+        y = top + ch - (value / 100.0) * ch
+        lines.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left+cw}" y2="{y:.1f}" stroke="#e6e6e6"/>')
+        lines.append(
+            f'<text x="{left-10}" y="{y+4:.1f}" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#444">{value}%</text>'
+        )
+    lines.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(f'<line x1="{left}" y1="{top+ch}" x2="{left+cw}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+
+    step = cw / max(1, len(categories))
+    bar_width = min(78.0, step * 0.62)
+    for i, category in enumerate(categories):
+        rate = 100.0 * solved[category] / totals[category]
+        height_value = (rate / 100.0) * ch
+        x = left + (i + 0.5) * step - bar_width / 2.0
+        y = top + ch - height_value
+        lines.append(
+            f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_width:.1f}" height="{height_value:.1f}" '
+            f'fill="{colors[category]}" stroke="#111" stroke-width="0.8"/>'
+        )
+        lines.append(
+            f'<text x="{x+bar_width/2:.1f}" y="{y-6:.1f}" text-anchor="middle" font-size="10" '
+            f'font-family="Arial, sans-serif" fill="#111">{rate:.1f}%</text>'
+        )
+        lines.append(
+            f'<text x="{x+bar_width/2:.1f}" y="{top+ch+20:.1f}" text-anchor="middle" font-size="11" '
+            f'font-family="Arial, sans-serif" fill="#111">{html.escape(label_fn(category))}</text>'
+        )
+    svg_finish(lines, out_path)
+
+
+def plot_box_by_category(
+    rows: Sequence[Dict[str, str]],
+    out_path: Path,
+    subtitle: str,
+    *,
+    title: str,
+    category_key: str,
+    category_order: Sequence[str],
+    label_fn: Callable[[str], str],
+    value_fn: Callable[[Dict[str, str]], Optional[float]],
+    y_label: str,
+) -> None:
+    categories = ordered_present_categories(rows, category_key, category_order)
+    grouped: Dict[str, List[float]] = {category: [] for category in categories}
+    for row in rows:
+        category = (row.get(category_key, "") or "").strip().lower()
+        if category not in grouped:
+            continue
+        value = value_fn(row)
+        if value is None or value < 0:
+            continue
+        grouped[category].append(value)
+    categories = [category for category in categories if grouped[category]]
+    if not categories:
+        return
+
+    ymax = max(max(values) for values in grouped.values())
+    ymax = nice_max(ymax * 1.1 if ymax > 0 else 1.0)
+    if category_key == "_domain_family":
+        colors = domain_family_compare_colors(categories)
+    else:
+        colors = color_for_categories(categories)
+
+    width = max(860, 250 + 140 * len(categories))
+    height = 580
+    left = 90
+    top = 92
+    right = 120
+    bottom = 110
+    cw = width - left - right
+    ch = height - top - bottom
+
+    lines = svg_start(width, height, title, subtitle)
+    for i in range(6):
+        frac = i / 5.0
+        y = top + ch - frac * ch
+        value = frac * ymax
+        lines.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left+cw}" y2="{y:.1f}" stroke="#e6e6e6"/>')
+        lines.append(
+            f'<text x="{left-10}" y="{y+4:.1f}" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#444">{value:.1f}</text>'
+        )
+    lines.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(f'<line x1="{left}" y1="{top+ch}" x2="{left+cw}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(
+        f'<text x="{left-62}" y="{top + ch/2:.1f}" transform="rotate(-90 {left-62} {top + ch/2:.1f})" '
+        f'font-size="12" font-family="Arial, sans-serif" fill="#111">{html.escape(y_label)}</text>'
+    )
+
+    step = cw / max(1, len(categories))
+    box_width = min(64.0, step * 0.52)
+    for i, category in enumerate(categories):
+        mn, q1, median, q3, mx = box_stats(grouped[category])
+        cx = left + (i + 0.5) * step
+        x = cx - box_width / 2.0
+        y_mn = top + ch - (mn / ymax) * ch
+        y_q1 = top + ch - (q1 / ymax) * ch
+        y_median = top + ch - (median / ymax) * ch
+        y_q3 = top + ch - (q3 / ymax) * ch
+        y_mx = top + ch - (mx / ymax) * ch
+        lines.append(f'<line x1="{cx:.1f}" y1="{y_mx:.1f}" x2="{cx:.1f}" y2="{y_q3:.1f}" stroke="#111" stroke-width="1.1"/>')
+        lines.append(f'<line x1="{cx:.1f}" y1="{y_q1:.1f}" x2="{cx:.1f}" y2="{y_mn:.1f}" stroke="#111" stroke-width="1.1"/>')
+        lines.append(f'<line x1="{x:.1f}" y1="{y_mx:.1f}" x2="{x+box_width:.1f}" y2="{y_mx:.1f}" stroke="#111" stroke-width="1.1"/>')
+        lines.append(f'<line x1="{x:.1f}" y1="{y_mn:.1f}" x2="{x+box_width:.1f}" y2="{y_mn:.1f}" stroke="#111" stroke-width="1.1"/>')
+        lines.append(
+            f'<rect x="{x:.1f}" y="{y_q3:.1f}" width="{box_width:.1f}" height="{max(1.0, y_q1-y_q3):.1f}" '
+            f'fill="{colors[category]}" stroke="#111" stroke-width="0.9"/>'
+        )
+        lines.append(f'<line x1="{x:.1f}" y1="{y_median:.1f}" x2="{x+box_width:.1f}" y2="{y_median:.1f}" stroke="#111" stroke-width="1.5"/>')
+        lines.append(
+            f'<text x="{cx:.1f}" y="{top+ch+20:.1f}" text-anchor="middle" font-size="11" '
+            f'font-family="Arial, sans-serif" fill="#111">{html.escape(label_fn(category))}</text>'
+        )
+    svg_finish(lines, out_path)
+
+
+def plot_runtime_vs_cells_by_category(
+    rows: Sequence[Dict[str, str]],
+    out_path: Path,
+    subtitle: str,
+    *,
+    title: str,
+    category_key: str,
+    category_order: Sequence[str],
+    label_fn: Callable[[str], str],
+    marker_fn: Optional[Callable[[str], str]] = None,
+) -> None:
+    categories = ordered_present_categories(rows, category_key, category_order)
+    grouped: Dict[str, Dict[int, List[float]]] = {category: defaultdict(list) for category in categories}
+    all_cells = set()
+    for row in rows:
+        if not include_line_scatter_point(row["_status"]):
+            continue
+        category = (row.get(category_key, "") or "").strip().lower()
+        if category not in grouped:
+            continue
+        cells = safe_int(row.get("cells", ""))
+        runtime = safe_float(row.get("measured_total_sec", ""))
+        if cells is None or runtime is None or runtime < 0:
+            continue
+        grouped[category][cells].append(runtime)
+        all_cells.add(cells)
+    categories = [category for category in categories if grouped[category]]
+    cells_sorted = sorted(all_cells)
+    if not categories or not cells_sorted:
+        return
+
+    max_y = max(
+        percentile(sorted(values), 0.5)
+        for category in categories
+        for values in grouped[category].values()
+        if values
+    )
+    y_max = nice_max(max_y * 1.25 if max_y > 0 else 1.0)
+    x_min = min(cells_sorted)
+    x_max = max(cells_sorted)
+    if category_key == "_domain_family":
+        colors = domain_family_compare_colors(categories)
+    else:
+        colors = color_for_categories(categories)
+
+    width = 1120
+    height = 620
+    left = 90
+    top = 92
+    right = 240
+    bottom = 90
+    cw = width - left - right
+    ch = height - top - bottom
+
+    lines = svg_start(width, height, title, subtitle)
+    for i in range(6):
+        frac = i / 5.0
+        y = top + ch - frac * ch
+        value = frac * y_max
+        lines.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left+cw}" y2="{y:.1f}" stroke="#ececec"/>')
+        lines.append(
+            f'<text x="{left-10}" y="{y+4:.1f}" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#444">{value:.1f}</text>'
+        )
+    for cells in cells_sorted:
+        x = lin_map(cells, x_min, x_max, left, left + cw)
+        lines.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{top+ch}" stroke="#f5f5f5"/>')
+        lines.append(
+            f'<text x="{x:.1f}" y="{top+ch+18:.1f}" text-anchor="middle" font-size="10" font-family="Arial, sans-serif" fill="#444">{cells}</text>'
+        )
+    lines.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(f'<line x1="{left}" y1="{top+ch}" x2="{left+cw}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(
+        f'<text x="{left+cw/2:.1f}" y="{top+ch+40:.1f}" text-anchor="middle" font-size="12" '
+        f'font-family="Arial, sans-serif" fill="#111">Cells (rows × cols)</text>'
+    )
+    lines.append(
+        f'<text x="{left-58}" y="{top + ch/2:.1f}" transform="rotate(-90 {left-58} {top + ch/2:.1f})" '
+        f'font-size="12" font-family="Arial, sans-serif" fill="#111">Median Measured Runtime (sec)</text>'
+    )
+
+    for category in categories:
+        points: List[Tuple[float, float]] = []
+        for cells in cells_sorted:
+            values = grouped[category].get(cells, [])
+            if not values:
+                continue
+            median = percentile(sorted(values), 0.5)
+            x = lin_map(cells, x_min, x_max, left, left + cw)
+            y = lin_map(median, 0, y_max, top + ch, top)
+            points.append((x, y))
+        if len(points) >= 2:
+            lines.append(
+                f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in points)}" '
+                f'fill="none" stroke="{colors[category]}" stroke-width="2.0"/>'
+            )
+        marker = marker_fn(category) if marker_fn is not None else "circle"
+        for x, y in points:
+            draw_point_marker(
+                lines,
+                x=x,
+                y=y,
+                marker=marker,
+                size=3.6,
+                fill=colors[category],
+                stroke="#111",
+                stroke_width=0.8,
+            )
+
+    draw_legend(
+        lines,
+        items=[(label_fn(category), colors[category]) for category in categories],
+        x=left + cw + 18,
+        y=top + 8,
+        title="Category",
+        marker="rect",
+    )
+    svg_finish(lines, out_path)
+
+
+def plot_success_rate_by_domain_family(rows: Sequence[Dict[str, str]], out_path: Path, subtitle: str) -> None:
+    plot_success_rate_by_category(
+        rows,
+        out_path,
+        subtitle,
+        title="Solve Rate By Domain Family (PDDL / FA / PLUS)",
+        category_key="_domain_family",
+        category_order=DOMAIN_FAMILY_ORDER,
+        label_fn=domain_family_compare_label,
+    )
+
+
+def plot_runtime_box_by_domain_family(rows: Sequence[Dict[str, str]], out_path: Path, subtitle: str) -> None:
+    plot_box_by_category(
+        rows,
+        out_path,
+        subtitle,
+        title="Measured Runtime Distribution By Domain Family",
+        category_key="_domain_family",
+        category_order=DOMAIN_FAMILY_ORDER,
+        label_fn=domain_family_compare_label,
+        value_fn=lambda row: safe_float(row.get("measured_total_sec", "")),
+        y_label="Measured Runtime (sec)",
+    )
+
+
+def plot_runtime_vs_cells_by_domain_family(rows: Sequence[Dict[str, str]], out_path: Path, subtitle: str) -> None:
+    plot_runtime_vs_cells_by_category(
+        rows,
+        out_path,
+        subtitle,
+        title="Median Runtime vs Level Size By Domain Family",
+        category_key="_domain_family",
+        category_order=DOMAIN_FAMILY_ORDER,
+        label_fn=domain_family_compare_label,
+        marker_fn=marker_for_family,
+    )
+
+
+def plot_success_rate_by_domain_scanner(rows: Sequence[Dict[str, str]], out_path: Path, subtitle: str) -> None:
+    plot_success_rate_by_category(
+        rows,
+        out_path,
+        subtitle,
+        title="Solve Rate By Scanner vs Non-scanner Domain Variant",
+        category_key="_domain_scanner",
+        category_order=DOMAIN_SCANNER_ORDER,
+        label_fn=domain_scanner_label,
+    )
+
+
+def plot_success_rate_by_domain_layout(rows: Sequence[Dict[str, str]], out_path: Path, subtitle: str) -> None:
+    plot_success_rate_by_category(
+        rows,
+        out_path,
+        subtitle,
+        title="Solve Rate By Combined vs Separated Domain Variant",
+        category_key="_domain_layout",
+        category_order=DOMAIN_LAYOUT_ORDER,
+        label_fn=domain_layout_label,
+    )
+
+
+def plot_success_rate_heatmap_domain_family_x_variant(
+    rows: Sequence[Dict[str, str]],
+    out_path: Path,
+    subtitle: str,
+) -> None:
+    families = ordered_present_categories(rows, "_domain_family", DOMAIN_FAMILY_ORDER)
+    variants = ordered_present_categories(rows, "_domain_variant", DOMAIN_VARIANT_ORDER)
+    if not families or not variants:
+        return
+
+    totals: Dict[Tuple[str, str], int] = Counter()
+    solved: Dict[Tuple[str, str], int] = Counter()
+    for row in rows:
+        family = (row.get("_domain_family", "") or "").strip().lower()
+        variant = (row.get("_domain_variant", "") or "").strip().lower()
+        if family not in families or variant not in variants or not is_attempt_status(row["_status"]):
+            continue
+        key = (family, variant)
+        totals[key] += 1
+        if row["_status"] == "solved":
+            solved[key] += 1
+    if not any(totals.values()):
+        return
+
+    width = max(1020, 360 + 160 * len(variants))
+    height = max(420, 220 + 56 * len(families))
+    left = 260
+    top = 100
+    right = 180
+    bottom = 120
+    cw = width - left - right
+    ch = height - top - bottom
+    cell_w = cw / max(1, len(variants))
+    cell_h = ch / max(1, len(families))
+
+    lines = svg_start(width, height, "Solve Rate Heatmap (PDDL / FA / PLUS x Domain Variant)", subtitle)
+    for ri, family in enumerate(families):
+        y = top + ri * cell_h
+        lines.append(
+            f'<text x="{left-12:.1f}" y="{y+cell_h*0.64:.1f}" text-anchor="end" font-size="11" '
+            f'font-family="Arial, sans-serif" fill="#111">{html.escape(domain_family_compare_label(family))}</text>'
+        )
+        for ci, variant in enumerate(variants):
+            x = left + ci * cell_w
+            key = (family, variant)
+            total = totals[key]
+            if total <= 0:
+                fill = "rgb(232,232,232)"
+                text = "NA"
+            else:
+                rate = solved[key] / total
+                fill = red_yellow_green(rate)
+                text = f"{rate*100:.0f}%"
+            lines.append(
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{cell_w:.1f}" height="{cell_h:.1f}" '
+                f'fill="{fill}" stroke="#ddd" stroke-width="0.8"/>'
+            )
+            lines.append(
+                f'<text x="{x+cell_w/2:.1f}" y="{y+cell_h*0.64:.1f}" text-anchor="middle" font-size="10" '
+                f'font-family="Arial, sans-serif" fill="#1f2937">{text}</text>'
+            )
+    lines.append(f'<rect x="{left:.1f}" y="{top:.1f}" width="{cw:.1f}" height="{ch:.1f}" fill="none" stroke="#111" stroke-width="1"/>')
+    for ci, variant in enumerate(variants):
+        x = left + (ci + 0.5) * cell_w
+        lines.append(
+            f'<text x="{x:.1f}" y="{top-8:.1f}" text-anchor="end" transform="rotate(-30 {x:.1f} {top-8:.1f})" '
+            f'font-size="10" font-family="Arial, sans-serif" fill="#111">{html.escape(domain_variant_label(variant))}</text>'
+        )
+    draw_legend(
+        lines,
+        items=[
+            ("100% solved", red_yellow_green(1.0)),
+            ("50% solved", red_yellow_green(0.5)),
+            ("0% solved", red_yellow_green(0.0)),
+            ("No data", "rgb(232,232,232)"),
+        ],
+        x=left + cw + 18,
+        y=top + 8,
+        title="Cell Meaning",
+        marker="rect",
+    )
+    svg_finish(lines, out_path)
+
+
+def plot_runtime_heatmap_domain_family_x_variant(
+    rows: Sequence[Dict[str, str]],
+    out_path: Path,
+    subtitle: str,
+) -> None:
+    families = ordered_present_categories(rows, "_domain_family", DOMAIN_FAMILY_ORDER)
+    variants = ordered_present_categories(rows, "_domain_variant", DOMAIN_VARIANT_ORDER)
+    if not families or not variants:
+        return
+
+    grouped: Dict[Tuple[str, str], List[float]] = defaultdict(list)
+    for row in rows:
+        family = (row.get("_domain_family", "") or "").strip().lower()
+        variant = (row.get("_domain_variant", "") or "").strip().lower()
+        if family not in families or variant not in variants:
+            continue
+        runtime = safe_float(row.get("measured_total_sec", ""))
+        if runtime is None or runtime < 0:
+            continue
+        grouped[(family, variant)].append(runtime)
+
+    medians: Dict[Tuple[str, str], Optional[float]] = {}
+    all_medians: List[float] = []
+    for family in families:
+        for variant in variants:
+            values = grouped.get((family, variant), [])
+            if values:
+                median = percentile(sorted(values), 0.5)
+                medians[(family, variant)] = median
+                all_medians.append(median)
+            else:
+                medians[(family, variant)] = None
+    if not all_medians:
+        return
+
+    vmin = min(all_medians)
+    vmax = max(all_medians)
+    if vmax <= vmin:
+        vmax = vmin + 1.0
+
+    width = max(1020, 360 + 160 * len(variants))
+    height = max(420, 220 + 56 * len(families))
+    left = 260
+    top = 100
+    right = 180
+    bottom = 120
+    cw = width - left - right
+    ch = height - top - bottom
+    cell_w = cw / max(1, len(variants))
+    cell_h = ch / max(1, len(families))
+
+    lines = svg_start(width, height, "Median Runtime Heatmap (PDDL / FA / PLUS x Domain Variant)", subtitle)
+    for ri, family in enumerate(families):
+        y = top + ri * cell_h
+        lines.append(
+            f'<text x="{left-12:.1f}" y="{y+cell_h*0.64:.1f}" text-anchor="end" font-size="11" '
+            f'font-family="Arial, sans-serif" fill="#111">{html.escape(domain_family_compare_label(family))}</text>'
+        )
+        for ci, variant in enumerate(variants):
+            x = left + ci * cell_w
+            median = medians[(family, variant)]
+            if median is None:
+                fill = "rgb(232,232,232)"
+                text = "NA"
+            else:
+                frac = (median - vmin) / (vmax - vmin)
+                fill = red_yellow_green(1.0 - frac)
+                text = f"{median:.1f}s"
+            lines.append(
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{cell_w:.1f}" height="{cell_h:.1f}" '
+                f'fill="{fill}" stroke="#ddd" stroke-width="0.8"/>'
+            )
+            lines.append(
+                f'<text x="{x+cell_w/2:.1f}" y="{y+cell_h*0.64:.1f}" text-anchor="middle" font-size="10" '
+                f'font-family="Arial, sans-serif" fill="#1f2937">{text}</text>'
+            )
+    lines.append(f'<rect x="{left:.1f}" y="{top:.1f}" width="{cw:.1f}" height="{ch:.1f}" fill="none" stroke="#111" stroke-width="1"/>')
+    for ci, variant in enumerate(variants):
+        x = left + (ci + 0.5) * cell_w
+        lines.append(
+            f'<text x="{x:.1f}" y="{top-8:.1f}" text-anchor="end" transform="rotate(-30 {x:.1f} {top-8:.1f})" '
+            f'font-size="10" font-family="Arial, sans-serif" fill="#111">{html.escape(domain_variant_label(variant))}</text>'
+        )
+    draw_legend(
+        lines,
+        items=[
+            ("Faster median", red_yellow_green(1.0)),
+            ("Slower median", red_yellow_green(0.0)),
+            ("No data", "rgb(232,232,232)"),
+        ],
+        x=left + cw + 18,
+        y=top + 8,
+        title="Cell Meaning",
+        marker="rect",
+    )
+    lines.append(
+        f'<text x="{left+cw+18:.1f}" y="{top+82:.1f}" font-size="11" font-family="Arial, sans-serif" fill="#444">'
+        f'Range: {vmin:.2f}s to {vmax:.2f}s</text>'
+    )
+    svg_finish(lines, out_path)
+
+
 def plot_box_by_domain(
     rows: Sequence[Dict[str, str]],
     out_path: Path,
@@ -959,6 +1654,118 @@ def plot_runtime_vs_cells(rows: Sequence[Dict[str, str]], out_path: Path, subtit
     svg_finish(lines, out_path)
 
 
+def plot_runtime_vs_cells_by_domain(rows: Sequence[Dict[str, str]], out_path: Path, subtitle: str) -> None:
+    domains = sorted(set(r["_domain"] for r in rows))
+    domain_family: Dict[str, str] = {}
+    grouped: Dict[str, Dict[int, List[float]]] = {domain: defaultdict(list) for domain in domains}
+    all_cells = set()
+    for row in rows:
+        if not include_line_scatter_point(row["_status"]):
+            continue
+        domain = row["_domain"]
+        cells = safe_int(row.get("cells", ""))
+        runtime = safe_float(row.get("measured_total_sec", ""))
+        if cells is None or runtime is None or runtime < 0:
+            continue
+        grouped[domain][cells].append(runtime)
+        domain_family.setdefault(domain, (row.get("_domain_family", "") or "unknown").strip().lower() or "unknown")
+        all_cells.add(cells)
+    domains = [domain for domain in domains if grouped[domain]]
+    cells_sorted = sorted(all_cells)
+    if not domains or not cells_sorted:
+        return
+
+    max_y = max(
+        percentile(sorted(values), 0.5)
+        for domain in domains
+        for values in grouped[domain].values()
+        if values
+    )
+    y_max = nice_max(max_y * 1.25 if max_y > 0 else 1.0)
+    colors = color_for_categories(domains)
+
+    width = 1560
+    height = 700
+    left = 90
+    top = 92
+    right = 460
+    bottom = 100
+    cw = width - left - right
+    ch = height - top - bottom
+
+    x_min = min(cells_sorted)
+    x_max = max(cells_sorted)
+    lines = svg_start(width, height, "Median Runtime vs Level Size By Domain", subtitle)
+    for i in range(6):
+        frac = i / 5.0
+        y = top + ch - frac * ch
+        value = frac * y_max
+        lines.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left+cw}" y2="{y:.1f}" stroke="#ececec"/>')
+        lines.append(
+            f'<text x="{left-10}" y="{y+4:.1f}" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#444">{value:.1f}</text>'
+        )
+    for cells in cells_sorted:
+        x = lin_map(cells, x_min, x_max, left, left + cw)
+        lines.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{top+ch}" stroke="#f5f5f5"/>')
+        lines.append(
+            f'<text x="{x:.1f}" y="{top+ch+18:.1f}" text-anchor="middle" font-size="10" font-family="Arial, sans-serif" fill="#444">{cells}</text>'
+        )
+    lines.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(f'<line x1="{left}" y1="{top+ch}" x2="{left+cw}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(
+        f'<text x="{left+cw/2:.1f}" y="{top+ch+40:.1f}" text-anchor="middle" font-size="12" '
+        f'font-family="Arial, sans-serif" fill="#111">Cells (rows × cols)</text>'
+    )
+    lines.append(
+        f'<text x="{left-58}" y="{top + ch/2:.1f}" transform="rotate(-90 {left-58} {top + ch/2:.1f})" '
+        f'font-size="12" font-family="Arial, sans-serif" fill="#111">Median Measured Runtime (sec)</text>'
+    )
+
+    for domain in domains:
+        points: List[Tuple[float, float]] = []
+        for cells in cells_sorted:
+            values = grouped[domain].get(cells, [])
+            if not values:
+                continue
+            median = percentile(sorted(values), 0.5)
+            x = lin_map(cells, x_min, x_max, left, left + cw)
+            y = lin_map(median, 0, y_max, top + ch, top)
+            points.append((x, y))
+        if len(points) >= 2:
+            lines.append(
+                f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in points)}" '
+                f'fill="none" stroke="{colors[domain]}" stroke-width="1.8"/>'
+            )
+        marker = marker_for_family(domain_family.get(domain, "unknown"))
+        for x, y in points:
+            draw_point_marker(
+                lines,
+                x=x,
+                y=y,
+                marker=marker,
+                size=3.2,
+                fill=colors[domain],
+                stroke="#111",
+                stroke_width=0.7,
+            )
+    draw_legend(
+        lines,
+        items=[(domain_compare_label(domain), colors[domain]) for domain in domains],
+        x=left + cw + 18,
+        y=top + 8,
+        title="Domain",
+        marker="rect",
+    )
+    families_present = sorted(set(domain_family.get(domain, "unknown") for domain in domains))
+    draw_family_shape_legend(
+        lines,
+        families=families_present,
+        x=left + cw + 18,
+        y=top + 8 + 18 + 16 * len(domains) + 10,
+    )
+    svg_finish(lines, out_path)
+
+
 def plot_action_literals_vs_cells(rows: Sequence[Dict[str, str]], out_path: Path, subtitle: str) -> None:
     grouped_actions: Dict[int, List[float]] = defaultdict(list)
     grouped_literals: Dict[int, List[float]] = defaultdict(list)
@@ -1063,6 +1870,505 @@ def plot_action_literals_vs_cells(rows: Sequence[Dict[str, str]], out_path: Path
         y=top + 8,
         title="Metric",
         marker="rect",
+    )
+    svg_finish(lines, out_path)
+
+
+def plot_runtime_grounding_vs_cells(rows: Sequence[Dict[str, str]], out_path: Path, subtitle: str) -> None:
+    grouped_runtime: Dict[int, List[float]] = defaultdict(list)
+    grouped_grounding: Dict[int, List[float]] = defaultdict(list)
+    all_cells: set[int] = set()
+
+    for row in rows:
+        if not include_line_scatter_point(row["_status"]):
+            continue
+        cells = safe_int(row.get("cells", ""))
+        if cells is None or cells <= 0:
+            continue
+        runtime = safe_float(row.get("measured_total_sec", ""))
+        grounding = safe_float(row.get("reported_grounding_sec", ""))
+        if runtime is not None and runtime >= 0:
+            grouped_runtime[cells].append(runtime)
+            all_cells.add(cells)
+        if grounding is not None and grounding >= 0:
+            grouped_grounding[cells].append(grounding)
+            all_cells.add(cells)
+
+    cells_sorted = sorted(all_cells)
+    runtime_medians = {cells: percentile(sorted(values), 0.5) for cells, values in grouped_runtime.items() if values}
+    grounding_medians = {cells: percentile(sorted(values), 0.5) for cells, values in grouped_grounding.items() if values}
+    if not cells_sorted or (not runtime_medians and not grounding_medians):
+        return
+
+    y_values = list(runtime_medians.values()) + list(grounding_medians.values())
+    y_max = nice_max(max(y_values) * 1.2 if y_values and max(y_values) > 0 else 1.0)
+    x_min = min(cells_sorted)
+    x_max = max(cells_sorted)
+
+    width = 1080
+    height = 560
+    left = 90
+    top = 92
+    right = 260
+    bottom = 90
+    cw = width - left - right
+    ch = height - top - bottom
+
+    lines = svg_start(width, height, "Measured Runtime / Grounding Time vs Level Size", subtitle)
+    for i in range(6):
+        frac = i / 5.0
+        y = top + ch - frac * ch
+        value = frac * y_max
+        lines.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left+cw}" y2="{y:.1f}" stroke="#ececec"/>')
+        lines.append(
+            f'<text x="{left-10}" y="{y+4:.1f}" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#444">{value:.1f}</text>'
+        )
+
+    for cells in cells_sorted:
+        x = lin_map(cells, x_min, x_max, left, left + cw)
+        lines.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{top+ch}" stroke="#f5f5f5"/>')
+        lines.append(
+            f'<text x="{x:.1f}" y="{top+ch+18:.1f}" text-anchor="middle" font-size="10" font-family="Arial, sans-serif" fill="#444">{cells}</text>'
+        )
+
+    lines.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(f'<line x1="{left}" y1="{top+ch}" x2="{left+cw}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(
+        f'<text x="{left+cw/2:.1f}" y="{top+ch+40:.1f}" text-anchor="middle" font-size="12" font-family="Arial, sans-serif" fill="#111">Cells (rows × cols)</text>'
+    )
+    lines.append(
+        f'<text x="{left-62}" y="{top+ch/2:.1f}" transform="rotate(-90 {left-62} {top+ch/2:.1f})" '
+        f'font-size="12" font-family="Arial, sans-serif" fill="#111">Time (sec, median)</text>'
+    )
+
+    series: List[Tuple[str, Dict[int, float], str, str]] = [
+        ("Measured runtime", runtime_medians, "#1f77b4", "circle"),
+        ("Reported grounding time", grounding_medians, "#ff7f0e", "square"),
+    ]
+    legend_items: List[Tuple[str, str]] = []
+    for label, values, color, marker in series:
+        if not values:
+            continue
+        points: List[Tuple[float, float]] = []
+        for cells in cells_sorted:
+            y_value = values.get(cells)
+            if y_value is None:
+                continue
+            x = lin_map(cells, x_min, x_max, left, left + cw)
+            y = lin_map(y_value, 0, y_max, top + ch, top)
+            points.append((x, y))
+        if len(points) >= 2:
+            lines.append(
+                f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in points)}" fill="none" stroke="{color}" stroke-width="2.0"/>'
+            )
+        for x, y in points:
+            draw_point_marker(
+                lines,
+                x=x,
+                y=y,
+                marker=marker,
+                size=3.4,
+                fill=color,
+                stroke="#111",
+                stroke_width=0.8,
+            )
+        legend_items.append((label, color))
+
+    draw_legend(
+        lines,
+        items=legend_items,
+        x=left + cw + 18,
+        y=top + 8,
+        title="Metric",
+        marker="rect",
+    )
+    svg_finish(lines, out_path)
+
+
+def plot_runtime_grounding_vs_cells_by_domain(
+    rows: Sequence[Dict[str, str]],
+    out_path: Path,
+    subtitle: str,
+) -> None:
+    domains = sorted(set(r["_domain"] for r in rows))
+    grouped_runtime: Dict[str, Dict[int, List[float]]] = {domain: defaultdict(list) for domain in domains}
+    grouped_grounding: Dict[str, Dict[int, List[float]]] = {domain: defaultdict(list) for domain in domains}
+    all_cells: set[int] = set()
+
+    for row in rows:
+        if not include_line_scatter_point(row["_status"]):
+            continue
+        domain = row["_domain"]
+        cells = safe_int(row.get("cells", ""))
+        if cells is None or cells <= 0:
+            continue
+        runtime = safe_float(row.get("measured_total_sec", ""))
+        grounding = safe_float(row.get("reported_grounding_sec", ""))
+        if runtime is not None and runtime >= 0:
+            grouped_runtime[domain][cells].append(runtime)
+            all_cells.add(cells)
+        if grounding is not None and grounding >= 0:
+            grouped_grounding[domain][cells].append(grounding)
+            all_cells.add(cells)
+
+    domains = [domain for domain in domains if grouped_runtime[domain] or grouped_grounding[domain]]
+    cells_sorted = sorted(all_cells)
+    if not domains or not cells_sorted:
+        return
+
+    runtime_medians: Dict[str, Dict[int, float]] = {}
+    grounding_medians: Dict[str, Dict[int, float]] = {}
+    y_values: List[float] = []
+    for domain in domains:
+        runtime_medians[domain] = {
+            cells: percentile(sorted(values), 0.5)
+            for cells, values in grouped_runtime[domain].items()
+            if values
+        }
+        grounding_medians[domain] = {
+            cells: percentile(sorted(values), 0.5)
+            for cells, values in grouped_grounding[domain].items()
+            if values
+        }
+        y_values.extend(runtime_medians[domain].values())
+        y_values.extend(grounding_medians[domain].values())
+    if not y_values:
+        return
+
+    y_max = nice_max(max(y_values) * 1.2 if max(y_values) > 0 else 1.0)
+    x_min = min(cells_sorted)
+    x_max = max(cells_sorted)
+    colors = color_for_categories(domains)
+
+    width = 1760
+    height = 760
+    left = 90
+    top = 92
+    right = 560
+    bottom = 100
+    cw = width - left - right
+    ch = height - top - bottom
+
+    lines = svg_start(width, height, "Measured Runtime / Grounding Time vs Level Size By Domain", subtitle)
+    for i in range(6):
+        frac = i / 5.0
+        y = top + ch - frac * ch
+        value = frac * y_max
+        lines.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left+cw}" y2="{y:.1f}" stroke="#ececec"/>')
+        lines.append(
+            f'<text x="{left-10}" y="{y+4:.1f}" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#444">{value:.1f}</text>'
+        )
+    for cells in cells_sorted:
+        x = lin_map(cells, x_min, x_max, left, left + cw)
+        lines.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{top+ch}" stroke="#f5f5f5"/>')
+        lines.append(
+            f'<text x="{x:.1f}" y="{top+ch+18:.1f}" text-anchor="middle" font-size="10" font-family="Arial, sans-serif" fill="#444">{cells}</text>'
+        )
+    lines.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(f'<line x1="{left}" y1="{top+ch}" x2="{left+cw}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(
+        f'<text x="{left+cw/2:.1f}" y="{top+ch+40:.1f}" text-anchor="middle" font-size="12" '
+        f'font-family="Arial, sans-serif" fill="#111">Cells (rows × cols)</text>'
+    )
+    lines.append(
+        f'<text x="{left-62}" y="{top+ch/2:.1f}" transform="rotate(-90 {left-62} {top+ch/2:.1f})" '
+        f'font-size="12" font-family="Arial, sans-serif" fill="#111">Time (sec, median)</text>'
+    )
+
+    for domain in domains:
+        runtime_points: List[Tuple[float, float]] = []
+        for cells in cells_sorted:
+            value = runtime_medians[domain].get(cells)
+            if value is None:
+                continue
+            x = lin_map(cells, x_min, x_max, left, left + cw)
+            y = lin_map(value, 0, y_max, top + ch, top)
+            runtime_points.append((x, y))
+        if len(runtime_points) >= 2:
+            lines.append(
+                f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in runtime_points)}" '
+                f'fill="none" stroke="{colors[domain]}" stroke-width="1.9"/>'
+            )
+        for x, y in runtime_points:
+            draw_point_marker(
+                lines,
+                x=x,
+                y=y,
+                marker="circle",
+                size=3.1,
+                fill=colors[domain],
+                stroke="#111",
+                stroke_width=0.7,
+            )
+
+        grounding_points: List[Tuple[float, float]] = []
+        for cells in cells_sorted:
+            value = grounding_medians[domain].get(cells)
+            if value is None:
+                continue
+            x = lin_map(cells, x_min, x_max, left, left + cw)
+            y = lin_map(value, 0, y_max, top + ch, top)
+            grounding_points.append((x, y))
+        if len(grounding_points) >= 2:
+            lines.append(
+                f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in grounding_points)}" '
+                f'fill="none" stroke="{colors[domain]}" stroke-width="1.7" stroke-dasharray="6,4"/>'
+            )
+        for x, y in grounding_points:
+            draw_point_marker(
+                lines,
+                x=x,
+                y=y,
+                marker="square",
+                size=3.0,
+                fill=colors[domain],
+                stroke="#111",
+                stroke_width=0.7,
+            )
+
+    draw_legend(
+        lines,
+        items=[(domain_compare_label(domain), colors[domain]) for domain in domains],
+        x=left + cw + 18,
+        y=top + 8,
+        title="Domain",
+        marker="rect",
+    )
+
+    metric_x = left + cw + 18
+    metric_y = top + 8 + 18 + 16 * len(domains) + 12
+    lines.append(
+        f'<text x="{metric_x:.1f}" y="{metric_y:.1f}" font-size="13" font-family="Arial, sans-serif" fill="#111">Metric</text>'
+    )
+    runtime_y = metric_y + 18
+    lines.append(
+        f'<line x1="{metric_x:.1f}" y1="{runtime_y-4:.1f}" x2="{metric_x+28:.1f}" y2="{runtime_y-4:.1f}" stroke="#444" stroke-width="1.9"/>'
+    )
+    draw_point_marker(
+        lines,
+        x=metric_x + 14,
+        y=runtime_y - 4,
+        marker="circle",
+        size=3.1,
+        fill="#444",
+        stroke="#111",
+        stroke_width=0.7,
+    )
+    lines.append(
+        f'<text x="{metric_x+38:.1f}" y="{runtime_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Measured runtime</text>'
+    )
+    grounding_y = runtime_y + 18
+    lines.append(
+        f'<line x1="{metric_x:.1f}" y1="{grounding_y-4:.1f}" x2="{metric_x+28:.1f}" y2="{grounding_y-4:.1f}" stroke="#444" stroke-width="1.7" stroke-dasharray="6,4"/>'
+    )
+    draw_point_marker(
+        lines,
+        x=metric_x + 14,
+        y=grounding_y - 4,
+        marker="square",
+        size=3.0,
+        fill="#444",
+        stroke="#111",
+        stroke_width=0.7,
+    )
+    lines.append(
+        f'<text x="{metric_x+38:.1f}" y="{grounding_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Reported grounding time</text>'
+    )
+    svg_finish(lines, out_path)
+
+
+def plot_runtime_grounding_vs_cells_by_domain_loglog(
+    rows: Sequence[Dict[str, str]],
+    out_path: Path,
+    subtitle: str,
+) -> None:
+    domains = sorted(set(r["_domain"] for r in rows))
+    grouped_runtime: Dict[str, Dict[int, List[float]]] = {domain: defaultdict(list) for domain in domains}
+    grouped_grounding: Dict[str, Dict[int, List[float]]] = {domain: defaultdict(list) for domain in domains}
+    all_cells: set[int] = set()
+
+    for row in rows:
+        if not include_line_scatter_point(row["_status"]):
+            continue
+        domain = row["_domain"]
+        cells = safe_int(row.get("cells", ""))
+        if cells is None or cells <= 0:
+            continue
+        runtime = safe_float(row.get("measured_total_sec", ""))
+        grounding = safe_float(row.get("reported_grounding_sec", ""))
+        if runtime is not None and runtime > 0:
+            grouped_runtime[domain][cells].append(runtime)
+            all_cells.add(cells)
+        if grounding is not None and grounding > 0:
+            grouped_grounding[domain][cells].append(grounding)
+            all_cells.add(cells)
+
+    domains = [domain for domain in domains if grouped_runtime[domain] or grouped_grounding[domain]]
+    cells_sorted = sorted(cells for cells in all_cells if cells > 0)
+    if not domains or not cells_sorted:
+        return
+
+    runtime_medians: Dict[str, Dict[int, float]] = {}
+    grounding_medians: Dict[str, Dict[int, float]] = {}
+    y_values: List[float] = []
+    for domain in domains:
+        runtime_medians[domain] = {
+            cells: percentile(sorted(values), 0.5)
+            for cells, values in grouped_runtime[domain].items()
+            if values and percentile(sorted(values), 0.5) > 0
+        }
+        grounding_medians[domain] = {
+            cells: percentile(sorted(values), 0.5)
+            for cells, values in grouped_grounding[domain].items()
+            if values and percentile(sorted(values), 0.5) > 0
+        }
+        y_values.extend(runtime_medians[domain].values())
+        y_values.extend(grounding_medians[domain].values())
+    if not y_values:
+        return
+
+    x_min = min(cells_sorted)
+    x_max = max(cells_sorted)
+    y_min = min(y_values)
+    y_max = max(y_values)
+    if x_max <= x_min or y_max <= y_min:
+        return
+
+    colors = color_for_categories(domains)
+
+    width = 1760
+    height = 760
+    left = 90
+    top = 92
+    right = 560
+    bottom = 100
+    cw = width - left - right
+    ch = height - top - bottom
+
+    x_ticks = power_of_ten_ticks(x_min, x_max)
+    y_ticks = power_of_ten_ticks(y_min, y_max)
+    lines = svg_start(width, height, "Measured Runtime / Grounding Time vs Level Size By Domain (Log-Log)", subtitle)
+    for value in y_ticks:
+        y = log_map(value, y_min, y_max, top + ch, top)
+        lines.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left+cw}" y2="{y:.1f}" stroke="#ececec"/>')
+        lines.append(
+            f'<text x="{left-10}" y="{y+4:.1f}" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#444">{html.escape(format_log_tick(value))}</text>'
+        )
+    for value in x_ticks:
+        x = log_map(value, x_min, x_max, left, left + cw)
+        lines.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{top+ch}" stroke="#f5f5f5"/>')
+        lines.append(
+            f'<text x="{x:.1f}" y="{top+ch+18:.1f}" text-anchor="middle" font-size="10" font-family="Arial, sans-serif" fill="#444">{html.escape(format_log_tick(value))}</text>'
+        )
+    lines.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(f'<line x1="{left}" y1="{top+ch}" x2="{left+cw}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(
+        f'<text x="{left+cw/2:.1f}" y="{top+ch+40:.1f}" text-anchor="middle" font-size="12" '
+        f'font-family="Arial, sans-serif" fill="#111">Cells (rows × cols, log scale)</text>'
+    )
+    lines.append(
+        f'<text x="{left-62}" y="{top+ch/2:.1f}" transform="rotate(-90 {left-62} {top+ch/2:.1f})" '
+        f'font-size="12" font-family="Arial, sans-serif" fill="#111">Time (sec, median, log scale)</text>'
+    )
+
+    for domain in domains:
+        runtime_points: List[Tuple[float, float]] = []
+        for cells in cells_sorted:
+            value = runtime_medians[domain].get(cells)
+            if value is None or value <= 0:
+                continue
+            x = log_map(cells, x_min, x_max, left, left + cw)
+            y = log_map(value, y_min, y_max, top + ch, top)
+            runtime_points.append((x, y))
+        if len(runtime_points) >= 2:
+            lines.append(
+                f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in runtime_points)}" '
+                f'fill="none" stroke="{colors[domain]}" stroke-width="1.9"/>'
+            )
+        for x, y in runtime_points:
+            draw_point_marker(
+                lines,
+                x=x,
+                y=y,
+                marker="circle",
+                size=3.1,
+                fill=colors[domain],
+                stroke="#111",
+                stroke_width=0.7,
+            )
+
+        grounding_points: List[Tuple[float, float]] = []
+        for cells in cells_sorted:
+            value = grounding_medians[domain].get(cells)
+            if value is None or value <= 0:
+                continue
+            x = log_map(cells, x_min, x_max, left, left + cw)
+            y = log_map(value, y_min, y_max, top + ch, top)
+            grounding_points.append((x, y))
+        if len(grounding_points) >= 2:
+            lines.append(
+                f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in grounding_points)}" '
+                f'fill="none" stroke="{colors[domain]}" stroke-width="1.7" stroke-dasharray="6,4"/>'
+            )
+        for x, y in grounding_points:
+            draw_point_marker(
+                lines,
+                x=x,
+                y=y,
+                marker="square",
+                size=3.0,
+                fill=colors[domain],
+                stroke="#111",
+                stroke_width=0.7,
+            )
+
+    draw_legend(
+        lines,
+        items=[(domain_compare_label(domain), colors[domain]) for domain in domains],
+        x=left + cw + 18,
+        y=top + 8,
+        title="Domain",
+        marker="rect",
+    )
+
+    metric_x = left + cw + 18
+    metric_y = top + 8 + 18 + 16 * len(domains) + 12
+    lines.append(
+        f'<text x="{metric_x:.1f}" y="{metric_y:.1f}" font-size="13" font-family="Arial, sans-serif" fill="#111">Metric</text>'
+    )
+    runtime_y = metric_y + 18
+    lines.append(
+        f'<line x1="{metric_x:.1f}" y1="{runtime_y-4:.1f}" x2="{metric_x+28:.1f}" y2="{runtime_y-4:.1f}" stroke="#444" stroke-width="1.9"/>'
+    )
+    draw_point_marker(
+        lines,
+        x=metric_x + 14,
+        y=runtime_y - 4,
+        marker="circle",
+        size=3.1,
+        fill="#444",
+        stroke="#111",
+        stroke_width=0.7,
+    )
+    lines.append(
+        f'<text x="{metric_x+38:.1f}" y="{runtime_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Measured runtime</text>'
+    )
+    grounding_y = runtime_y + 18
+    lines.append(
+        f'<line x1="{metric_x:.1f}" y1="{grounding_y-4:.1f}" x2="{metric_x+28:.1f}" y2="{grounding_y-4:.1f}" stroke="#444" stroke-width="1.7" stroke-dasharray="6,4"/>'
+    )
+    draw_point_marker(
+        lines,
+        x=metric_x + 14,
+        y=grounding_y - 4,
+        marker="square",
+        size=3.0,
+        fill="#444",
+        stroke="#111",
+        stroke_width=0.7,
+    )
+    lines.append(
+        f'<text x="{metric_x+38:.1f}" y="{grounding_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Reported grounding time</text>'
     )
     svg_finish(lines, out_path)
 
@@ -1643,6 +2949,19 @@ def build_chart_calls(rows: Sequence[Dict[str, str]], subtitle: str) -> List[Tup
         ("success_rate_by_setting.svg", lambda p: plot_success_rate(rows, p, subtitle)),
         ("status_by_domain.svg", lambda p: plot_status_by_domain(rows, p, subtitle)),
         ("success_rate_by_domain.svg", lambda p: plot_success_rate_by_domain(rows, p, subtitle)),
+        ("success_rate_by_domain_family.svg", lambda p: plot_success_rate_by_domain_family(rows, p, subtitle)),
+        ("runtime_box_by_domain_family.svg", lambda p: plot_runtime_box_by_domain_family(rows, p, subtitle)),
+        ("runtime_vs_cells_by_domain_family.svg", lambda p: plot_runtime_vs_cells_by_domain_family(rows, p, subtitle)),
+        ("success_rate_by_scanner_mode.svg", lambda p: plot_success_rate_by_domain_scanner(rows, p, subtitle)),
+        ("success_rate_by_layout_mode.svg", lambda p: plot_success_rate_by_domain_layout(rows, p, subtitle)),
+        (
+            "success_rate_heatmap_domain_family_x_variant.svg",
+            lambda p: plot_success_rate_heatmap_domain_family_x_variant(rows, p, subtitle),
+        ),
+        (
+            "runtime_heatmap_domain_family_x_variant.svg",
+            lambda p: plot_runtime_heatmap_domain_family_x_variant(rows, p, subtitle),
+        ),
         (
             "runtime_box_by_setting.svg",
             lambda p: plot_box_by_setting(
@@ -1667,6 +2986,16 @@ def build_chart_calls(rows: Sequence[Dict[str, str]], subtitle: str) -> List[Tup
         ),
         ("runtime_cdf_by_setting.svg", lambda p: plot_runtime_cdf(rows, p, subtitle)),
         ("runtime_vs_cells_by_setting.svg", lambda p: plot_runtime_vs_cells(rows, p, subtitle)),
+        ("runtime_vs_cells_by_domain.svg", lambda p: plot_runtime_vs_cells_by_domain(rows, p, subtitle)),
+        ("runtime_grounding_vs_cells.svg", lambda p: plot_runtime_grounding_vs_cells(rows, p, subtitle)),
+        (
+            "runtime_grounding_vs_cells_by_domain.svg",
+            lambda p: plot_runtime_grounding_vs_cells_by_domain(rows, p, subtitle),
+        ),
+        (
+            "runtime_grounding_vs_cells_by_domain_loglog.svg",
+            lambda p: plot_runtime_grounding_vs_cells_by_domain_loglog(rows, p, subtitle),
+        ),
         ("action_literals_vs_cells.svg", lambda p: plot_action_literals_vs_cells(rows, p, subtitle)),
         ("runtime_vs_cells_by_phase.svg", lambda p: plot_runtime_vs_cells_by_phase(rows, p, subtitle)),
         ("runtime_heatmap_domain_x_setting.svg", lambda p: plot_runtime_heatmap_domain_x_setting(rows, p, subtitle)),
