@@ -1,0 +1,27 @@
+{
+  "timeout_sec": 900,
+  "max_parallel_runs": 6,
+  "domains_glob": "pddl/test_domains/h1/*.pddl",
+  "levels_dir": "pddl/test_problems",
+  "level_glob": "*.txt",
+  "planner_settings": [
+    {
+      "name": "fd-lazy-greedy-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy_greedy([h],preferred=[h]))"
+    },
+    {
+      "name": "fd-lazy-greedy-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search let(h,ff(),lazy_greedy([h],preferred=[h]))"
+    },
+    {
+      "name": "enhsp-gbfs-blind-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-s gbfs -h blind"
+    }
+  ]
+}

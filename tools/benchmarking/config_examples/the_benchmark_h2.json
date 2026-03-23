@@ -1,7 +1,7 @@
 {
   "timeout_sec": 900,
   "max_parallel_runs": 6,
-  "domains_glob": "pddl/test_domains/*.pddl",
+  "domains_glob": "pddl/test_domains/h2*.pddl",
   "levels_dir": "pddl/test_problems",
   "level_glob": "*.txt",
   "planner_settings": [
