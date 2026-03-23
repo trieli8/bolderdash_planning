@@ -14,6 +14,7 @@ import problem_gen_plus_from_domain as plus_gen  # type: ignore  # noqa: E402
 
 SELECTED_LEVELS = (1, 2, 3, 6, 7, 8, 9, 11, 13, 14)
 DEFAULT_DOMAIN_NAME = "mine-tick-gravity-plus-scanner-separated-events"
+STEEL_WALL_ID = 19
 
 
 def _load_level_strings(path: Path) -> list[str]:
@@ -52,6 +53,33 @@ def _render_level(
     return "|".join(fields) + "|"
 
 
+def _trim_outer_steel_border(
+    rows: int,
+    cols: int,
+    cell_ids: list[int],
+) -> tuple[int, int, list[int]]:
+    grid = [cell_ids[row_start:row_start + cols] for row_start in range(0, len(cell_ids), cols)]
+
+    while grid and all(cell_id == STEEL_WALL_ID for cell_id in grid[0]):
+        grid.pop(0)
+    while grid and all(cell_id == STEEL_WALL_ID for cell_id in grid[-1]):
+        grid.pop()
+    while grid and grid[0] and all(row[0] == STEEL_WALL_ID for row in grid):
+        for row in grid:
+            del row[0]
+    while grid and grid[0] and all(row[-1] == STEEL_WALL_ID for row in grid):
+        for row in grid:
+            row.pop()
+
+    if not grid or not grid[0]:
+        raise ValueError("Trimming the outer steel border removed the entire level.")
+
+    trimmed_rows = len(grid)
+    trimmed_cols = len(grid[0])
+    trimmed_cell_ids = [cell_id for row in grid for cell_id in row]
+    return trimmed_rows, trimmed_cols, trimmed_cell_ids
+
+
 def _marked_level_text(
     level_str: str,
     *,
@@ -82,7 +110,8 @@ def _marked_level_text(
         cell_ids[agent_idx] = next(iter(base.EMPTY_IDS))
         cell_ids[start_idx] = next(iter(base.AGENT_IDS))
 
-    return _render_level(rows, cols, max_time, required_gems, cell_ids)
+    trimmed_rows, trimmed_cols, trimmed_cell_ids = _trim_outer_steel_border(rows, cols, cell_ids)
+    return _render_level(trimmed_rows, trimmed_cols, max_time, required_gems, trimmed_cell_ids)
 
 
 def _write_level_file(path: Path, level_str: str) -> None:

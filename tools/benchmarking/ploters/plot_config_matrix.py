@@ -360,6 +360,7 @@ def draw_family_shape_legend(
     families: Sequence[str],
     x: float,
     y: float,
+    label_fn: Callable[[str], str] = family_label,
 ) -> None:
     if not families:
         return
@@ -379,7 +380,7 @@ def draw_family_shape_legend(
             stroke_width=0.9,
         )
         lines.append(
-            f'<text x="{x+18:.1f}" y="{cy:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">{html.escape(family_label(fam))}</text>'
+            f'<text x="{x+18:.1f}" y="{cy:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">{html.escape(label_fn(fam))}</text>'
         )
         cy += 16
 
@@ -1762,6 +1763,7 @@ def plot_runtime_vs_cells_by_domain(rows: Sequence[Dict[str, str]], out_path: Pa
         families=families_present,
         x=left + cw + 18,
         y=top + 8 + 18 + 16 * len(domains) + 10,
+        label_fn=domain_family_compare_label,
     )
     svg_finish(lines, out_path)
 
@@ -1991,6 +1993,7 @@ def plot_runtime_grounding_vs_cells_by_domain(
     subtitle: str,
 ) -> None:
     domains = sorted(set(r["_domain"] for r in rows))
+    domain_family: Dict[str, str] = {}
     grouped_runtime: Dict[str, Dict[int, List[float]]] = {domain: defaultdict(list) for domain in domains}
     grouped_grounding: Dict[str, Dict[int, List[float]]] = {domain: defaultdict(list) for domain in domains}
     all_cells: set[int] = set()
@@ -2010,6 +2013,7 @@ def plot_runtime_grounding_vs_cells_by_domain(
         if grounding is not None and grounding >= 0:
             grouped_grounding[domain][cells].append(grounding)
             all_cells.add(cells)
+        domain_family.setdefault(domain, (row.get("_domain_family", "") or "unknown").strip().lower() or "unknown")
 
     domains = [domain for domain in domains if grouped_runtime[domain] or grouped_grounding[domain]]
     cells_sorted = sorted(all_cells)
@@ -2076,6 +2080,7 @@ def plot_runtime_grounding_vs_cells_by_domain(
     )
 
     for domain in domains:
+        marker = marker_for_family(domain_family.get(domain, "unknown"))
         runtime_points: List[Tuple[float, float]] = []
         for cells in cells_sorted:
             value = runtime_medians[domain].get(cells)
@@ -2094,7 +2099,7 @@ def plot_runtime_grounding_vs_cells_by_domain(
                 lines,
                 x=x,
                 y=y,
-                marker="circle",
+                marker=marker,
                 size=3.1,
                 fill=colors[domain],
                 stroke="#111",
@@ -2119,11 +2124,11 @@ def plot_runtime_grounding_vs_cells_by_domain(
                 lines,
                 x=x,
                 y=y,
-                marker="square",
+                marker=marker,
                 size=3.0,
-                fill=colors[domain],
-                stroke="#111",
-                stroke_width=0.7,
+                fill="white",
+                stroke=colors[domain],
+                stroke_width=1.0,
             )
 
     draw_legend(
@@ -2144,35 +2149,23 @@ def plot_runtime_grounding_vs_cells_by_domain(
     lines.append(
         f'<line x1="{metric_x:.1f}" y1="{runtime_y-4:.1f}" x2="{metric_x+28:.1f}" y2="{runtime_y-4:.1f}" stroke="#444" stroke-width="1.9"/>'
     )
-    draw_point_marker(
-        lines,
-        x=metric_x + 14,
-        y=runtime_y - 4,
-        marker="circle",
-        size=3.1,
-        fill="#444",
-        stroke="#111",
-        stroke_width=0.7,
-    )
     lines.append(
-        f'<text x="{metric_x+38:.1f}" y="{runtime_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Measured runtime</text>'
+        f'<text x="{metric_x+38:.1f}" y="{runtime_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Measured runtime (solid)</text>'
     )
     grounding_y = runtime_y + 18
     lines.append(
         f'<line x1="{metric_x:.1f}" y1="{grounding_y-4:.1f}" x2="{metric_x+28:.1f}" y2="{grounding_y-4:.1f}" stroke="#444" stroke-width="1.7" stroke-dasharray="6,4"/>'
     )
-    draw_point_marker(
-        lines,
-        x=metric_x + 14,
-        y=grounding_y - 4,
-        marker="square",
-        size=3.0,
-        fill="#444",
-        stroke="#111",
-        stroke_width=0.7,
-    )
     lines.append(
-        f'<text x="{metric_x+38:.1f}" y="{grounding_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Reported grounding time</text>'
+        f'<text x="{metric_x+38:.1f}" y="{grounding_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Reported grounding time (dashed)</text>'
+    )
+    families_present = sorted(set(domain_family.get(domain, "unknown") for domain in domains))
+    draw_family_shape_legend(
+        lines,
+        families=families_present,
+        x=metric_x,
+        y=grounding_y + 24,
+        label_fn=domain_family_compare_label,
     )
     svg_finish(lines, out_path)
 
@@ -2183,6 +2176,7 @@ def plot_runtime_grounding_vs_cells_by_domain_loglog(
     subtitle: str,
 ) -> None:
     domains = sorted(set(r["_domain"] for r in rows))
+    domain_family: Dict[str, str] = {}
     grouped_runtime: Dict[str, Dict[int, List[float]]] = {domain: defaultdict(list) for domain in domains}
     grouped_grounding: Dict[str, Dict[int, List[float]]] = {domain: defaultdict(list) for domain in domains}
     all_cells: set[int] = set()
@@ -2202,6 +2196,7 @@ def plot_runtime_grounding_vs_cells_by_domain_loglog(
         if grounding is not None and grounding > 0:
             grouped_grounding[domain][cells].append(grounding)
             all_cells.add(cells)
+        domain_family.setdefault(domain, (row.get("_domain_family", "") or "unknown").strip().lower() or "unknown")
 
     domains = [domain for domain in domains if grouped_runtime[domain] or grouped_grounding[domain]]
     cells_sorted = sorted(cells for cells in all_cells if cells > 0)
@@ -2272,6 +2267,7 @@ def plot_runtime_grounding_vs_cells_by_domain_loglog(
     )
 
     for domain in domains:
+        marker = marker_for_family(domain_family.get(domain, "unknown"))
         runtime_points: List[Tuple[float, float]] = []
         for cells in cells_sorted:
             value = runtime_medians[domain].get(cells)
@@ -2290,7 +2286,7 @@ def plot_runtime_grounding_vs_cells_by_domain_loglog(
                 lines,
                 x=x,
                 y=y,
-                marker="circle",
+                marker=marker,
                 size=3.1,
                 fill=colors[domain],
                 stroke="#111",
@@ -2315,11 +2311,11 @@ def plot_runtime_grounding_vs_cells_by_domain_loglog(
                 lines,
                 x=x,
                 y=y,
-                marker="square",
+                marker=marker,
                 size=3.0,
-                fill=colors[domain],
-                stroke="#111",
-                stroke_width=0.7,
+                fill="white",
+                stroke=colors[domain],
+                stroke_width=1.0,
             )
 
     draw_legend(
@@ -2340,35 +2336,23 @@ def plot_runtime_grounding_vs_cells_by_domain_loglog(
     lines.append(
         f'<line x1="{metric_x:.1f}" y1="{runtime_y-4:.1f}" x2="{metric_x+28:.1f}" y2="{runtime_y-4:.1f}" stroke="#444" stroke-width="1.9"/>'
     )
-    draw_point_marker(
-        lines,
-        x=metric_x + 14,
-        y=runtime_y - 4,
-        marker="circle",
-        size=3.1,
-        fill="#444",
-        stroke="#111",
-        stroke_width=0.7,
-    )
     lines.append(
-        f'<text x="{metric_x+38:.1f}" y="{runtime_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Measured runtime</text>'
+        f'<text x="{metric_x+38:.1f}" y="{runtime_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Measured runtime (solid)</text>'
     )
     grounding_y = runtime_y + 18
     lines.append(
         f'<line x1="{metric_x:.1f}" y1="{grounding_y-4:.1f}" x2="{metric_x+28:.1f}" y2="{grounding_y-4:.1f}" stroke="#444" stroke-width="1.7" stroke-dasharray="6,4"/>'
     )
-    draw_point_marker(
-        lines,
-        x=metric_x + 14,
-        y=grounding_y - 4,
-        marker="square",
-        size=3.0,
-        fill="#444",
-        stroke="#111",
-        stroke_width=0.7,
-    )
     lines.append(
-        f'<text x="{metric_x+38:.1f}" y="{grounding_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Reported grounding time</text>'
+        f'<text x="{metric_x+38:.1f}" y="{grounding_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Reported grounding time (dashed)</text>'
+    )
+    families_present = sorted(set(domain_family.get(domain, "unknown") for domain in domains))
+    draw_family_shape_legend(
+        lines,
+        families=families_present,
+        x=metric_x,
+        y=grounding_y + 24,
+        label_fn=domain_family_compare_label,
     )
     svg_finish(lines, out_path)
 
