@@ -1,7 +1,7 @@
 {
   "timeout_sec": 600,
   "max_parallel_runs": 3,
-  "domains_glob": "pddl/test_domains/*.pddl",
+  "domains_glob": "pddl/test_domains_target/*.pddl",
   "levels_dir": "pddl/test_problems/h2",
   "level_glob": "*.txt",
   "planner_settings": [
@@ -9,7 +9,7 @@
       "name": "fd-lazy-fa",
       "family": "fa",
       "planner": "fd",
-      "domain_include": ["*domain_FA_non-scanner_separated.pddl"],
+      "domain_include": ["*domain_FA_scanner_combined.pddl"],
       "planner_args": "--search \"let(hff, ff(), lazy_greedy([hff], preferred=[hff]))\""
     }
   ]

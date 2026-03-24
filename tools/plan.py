@@ -577,15 +577,32 @@ def solve_with_fd(
 def select_problem_gen(domain: Path) -> Path:
     root = repo_root()
 
-    def read_source_name(path: Path) -> Optional[str]:
+    def read_header_name(path: Path, header: str) -> Optional[str]:
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             return None
-        m = re.search(r"^;\s*source:\s*(.+)$", text, flags=re.MULTILINE)
+        m = re.search(rf"^;\s*{re.escape(header)}:\s*(.+)$", text, flags=re.MULTILINE)
         if not m:
             return None
         return Path(m.group(1).strip()).name
+
+    # New domain-matched wrappers live alongside generated test domains and are keyed
+    # by either the file stem itself or the `; variant:` header carried in the file.
+    candidate_stems: List[str] = [domain.stem]
+    variant_name = read_header_name(domain, "variant")
+    if variant_name:
+        variant_stem = Path(variant_name).stem
+        if variant_stem not in candidate_stems:
+            candidate_stems.append(variant_stem)
+
+    for stem in candidate_stems:
+        candidate = domain.parent / f"problem_gen_{stem}.py"
+        if candidate.exists():
+            return candidate
+
+    def read_source_name(path: Path) -> Optional[str]:
+        return read_header_name(path, "source")
 
     source_to_gen = {
         "domain.pddl": "problem_gen.py",
