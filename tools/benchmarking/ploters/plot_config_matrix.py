@@ -1876,6 +1876,176 @@ def plot_action_literals_vs_cells(rows: Sequence[Dict[str, str]], out_path: Path
     svg_finish(lines, out_path)
 
 
+def plot_action_literals_vs_cells_by_domain(rows: Sequence[Dict[str, str]], out_path: Path, subtitle: str) -> None:
+    domains = sorted(set(r["_domain"] for r in rows))
+    domain_family: Dict[str, str] = {}
+    grouped_actions: Dict[str, Dict[int, List[float]]] = {domain: defaultdict(list) for domain in domains}
+    grouped_literals: Dict[str, Dict[int, List[float]]] = {domain: defaultdict(list) for domain in domains}
+    all_cells: set[int] = set()
+
+    for r in rows:
+        domain = r["_domain"]
+        cells = safe_int(r.get("cells", ""))
+        if cells is None or cells <= 0:
+            continue
+        action_count = safe_float(r.get("action_set_size", ""))
+        literal_count = safe_float(r.get("facts_count", ""))
+        if action_count is not None and action_count >= 0:
+            grouped_actions[domain][cells].append(action_count)
+            all_cells.add(cells)
+        if literal_count is not None and literal_count >= 0:
+            grouped_literals[domain][cells].append(literal_count)
+            all_cells.add(cells)
+        domain_family.setdefault(domain, (r.get("_domain_family", "") or "unknown").strip().lower() or "unknown")
+
+    domains = [domain for domain in domains if grouped_actions[domain] or grouped_literals[domain]]
+    cells_sorted = sorted(all_cells)
+    if not domains or not cells_sorted:
+        return
+
+    action_medians: Dict[str, Dict[int, float]] = {}
+    literal_medians: Dict[str, Dict[int, float]] = {}
+    y_values: List[float] = []
+    for domain in domains:
+        action_medians[domain] = {
+            cells: percentile(sorted(values), 0.5)
+            for cells, values in grouped_actions[domain].items()
+            if values
+        }
+        literal_medians[domain] = {
+            cells: percentile(sorted(values), 0.5)
+            for cells, values in grouped_literals[domain].items()
+            if values
+        }
+        y_values.extend(action_medians[domain].values())
+        y_values.extend(literal_medians[domain].values())
+    if not y_values:
+        return
+
+    y_max = nice_max(max(y_values) * 1.2 if max(y_values) > 0 else 1.0)
+    x_min = min(cells_sorted)
+    x_max = max(cells_sorted)
+    colors = color_for_categories(domains)
+
+    width = 1760
+    height = 760
+    left = 90
+    top = 92
+    right = 560
+    bottom = 100
+    cw = width - left - right
+    ch = height - top - bottom
+
+    lines = svg_start(width, height, "Action Set / Literal Count vs Map Size By Domain", subtitle)
+    for i in range(6):
+        frac = i / 5.0
+        y = top + ch - frac * ch
+        val = frac * y_max
+        lines.append(f'<line x1="{left}" y1="{y:.1f}" x2="{left+cw}" y2="{y:.1f}" stroke="#ececec"/>')
+        lines.append(
+            f'<text x="{left-10}" y="{y+4:.1f}" text-anchor="end" font-size="11" font-family="Arial, sans-serif" fill="#444">{val:.0f}</text>'
+        )
+
+    for cells in cells_sorted:
+        x = lin_map(cells, x_min, x_max, left, left + cw)
+        lines.append(f'<line x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{top+ch}" stroke="#f5f5f5"/>')
+        lines.append(
+            f'<text x="{x:.1f}" y="{top+ch+18:.1f}" text-anchor="middle" font-size="10" font-family="Arial, sans-serif" fill="#444">{cells}</text>'
+        )
+
+    lines.append(f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(f'<line x1="{left}" y1="{top+ch}" x2="{left+cw}" y2="{top+ch}" stroke="#111" stroke-width="1.4"/>')
+    lines.append(
+        f'<text x="{left+cw/2:.1f}" y="{top+ch+40:.1f}" text-anchor="middle" font-size="12" font-family="Arial, sans-serif" fill="#111">Cells (rows × cols)</text>'
+    )
+    lines.append(
+        f'<text x="{left-62}" y="{top+ch/2:.1f}" transform="rotate(-90 {left-62} {top+ch/2:.1f})" '
+        f'font-size="12" font-family="Arial, sans-serif" fill="#111">Count (median)</text>'
+    )
+
+    for domain in domains:
+        marker = marker_for_family(domain_family.get(domain, "unknown"))
+        action_points: List[Tuple[float, float]] = []
+        for cells in cells_sorted:
+            value = action_medians[domain].get(cells)
+            if value is None:
+                continue
+            x = lin_map(cells, x_min, x_max, left, left + cw)
+            y = lin_map(value, 0, y_max, top + ch, top)
+            action_points.append((x, y))
+        if len(action_points) >= 2:
+            lines.append(
+                f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in action_points)}" '
+                f'fill="none" stroke="{colors[domain]}" stroke-width="1.9"/>'
+            )
+        for x, y in action_points:
+            draw_point_marker(
+                lines,
+                x=x,
+                y=y,
+                marker=marker,
+                size=3.1,
+                fill=colors[domain],
+                stroke="#111",
+                stroke_width=0.7,
+            )
+
+        literal_points: List[Tuple[float, float]] = []
+        for cells in cells_sorted:
+            value = literal_medians[domain].get(cells)
+            if value is None:
+                continue
+            x = lin_map(cells, x_min, x_max, left, left + cw)
+            y = lin_map(value, 0, y_max, top + ch, top)
+            literal_points.append((x, y))
+        if len(literal_points) >= 2:
+            lines.append(
+                f'<polyline points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in literal_points)}" '
+                f'fill="none" stroke="{colors[domain]}" stroke-width="1.7" stroke-dasharray="6,4"/>'
+            )
+        for x, y in literal_points:
+            draw_point_marker(
+                lines,
+                x=x,
+                y=y,
+                marker=marker,
+                size=3.0,
+                fill="white",
+                stroke=colors[domain],
+                stroke_width=1.0,
+            )
+
+    draw_legend(
+        lines,
+        items=[(domain_compare_label(domain), colors[domain]) for domain in domains],
+        x=left + cw + 18,
+        y=top + 8,
+        title="Domain",
+        marker="rect",
+    )
+
+    metric_x = left + cw + 18
+    metric_y = top + 8 + 18 + 16 * len(domains) + 12
+    lines.append(
+        f'<text x="{metric_x:.1f}" y="{metric_y:.1f}" font-size="13" font-family="Arial, sans-serif" fill="#111">Metric</text>'
+    )
+    action_y = metric_y + 18
+    lines.append(
+        f'<line x1="{metric_x:.1f}" y1="{action_y-4:.1f}" x2="{metric_x+28:.1f}" y2="{action_y-4:.1f}" stroke="#444" stroke-width="1.9"/>'
+    )
+    lines.append(
+        f'<text x="{metric_x+38:.1f}" y="{action_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Action set size (solid)</text>'
+    )
+    literal_y = action_y + 18
+    lines.append(
+        f'<line x1="{metric_x:.1f}" y1="{literal_y-4:.1f}" x2="{metric_x+28:.1f}" y2="{literal_y-4:.1f}" stroke="#444" stroke-width="1.7" stroke-dasharray="6,4"/>'
+    )
+    lines.append(
+        f'<text x="{metric_x+38:.1f}" y="{literal_y:.1f}" font-size="12" font-family="Arial, sans-serif" fill="#111">Literal count (dashed)</text>'
+    )
+    svg_finish(lines, out_path)
+
+
 def plot_runtime_grounding_vs_cells(rows: Sequence[Dict[str, str]], out_path: Path, subtitle: str) -> None:
     grouped_runtime: Dict[int, List[float]] = defaultdict(list)
     grouped_grounding: Dict[int, List[float]] = defaultdict(list)

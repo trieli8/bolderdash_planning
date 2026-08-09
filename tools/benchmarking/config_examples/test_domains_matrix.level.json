@@ -2,11 +2,11 @@
   "timeout_sec": 1500,
   "max_parallel_runs": 2,
   "random_seed": 1337,
-  "domains_glob": "pddl/test_domains/domain*.pddl",
+  "domains_glob": "pddl/test_domains_pre_target/domain*.pddl",
   "custom_fail_streak_limit": 3,
   "repeat_successful_runs": 0,
   "custom_levels": [
-    "pddl/level.txt"
+    "pddl/level2.txt"
   ],
   "growth": {
     "enabled": false,

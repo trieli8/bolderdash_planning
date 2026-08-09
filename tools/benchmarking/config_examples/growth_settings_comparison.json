@@ -1,0 +1,63 @@
+{
+  "timeout_sec": 60,
+  "max_parallel_runs": 6,
+  "random_seed": 42,
+  "domains_glob": "pddl/test_domains_target/domain*.pddl",
+  "custom_fail_streak_limit": 3,
+  "repeat_successful_runs": 0,
+  "growth_stop_on_failure": true,
+  "growth": {
+    "enabled": true,
+    "start_size": 4,
+    "max_size": 20,
+    "size_step": 2,
+    "required_gems": 1,
+    "max_time_min": 200,
+    "max_time_scale": 8,
+    "standard_timeout_sec": 60
+  },
+  "planner_settings": [
+    {
+      "name": "fd-lazy-greedy-classic",
+      "family": "classic",
+      "planner": "fd",
+      "planner_args": "--search lazy_greedy([ff()],preferred=[ff()])"
+    },
+    {
+      "name": "fd-lazy-wastar-classic",
+      "family": "classic",
+      "planner": "fd",
+      "fd_optimal": true
+    },
+    {
+      "name": "fd-lazy-greedy-fa",
+      "family": "fa",
+      "planner": "fd",
+      "planner_args": "--search lazy_greedy([ff()],preferred=[ff()])"
+    },
+    {
+      "name": "fd-lazy-wastar-fa",
+      "family": "fa",
+      "planner": "fd",
+      "fd_optimal": true
+    },
+    {
+      "name": "enhsp-gbfs-ngc-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-h ngc -s gbfs -dap"
+    },
+    {
+      "name": "enhsp-wastar-hadd-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-h hadd -s WAStar"
+    },
+    {
+      "name": "enhsp-opt-hrmax-plus",
+      "family": "plus",
+      "planner": "enhsp",
+      "planner_args": "-planner opt-hrmax"
+    }
+  ]
+}

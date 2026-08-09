@@ -426,7 +426,7 @@ def main() -> int:
     ap.add_argument("--planner", choices=["auto", "enhsp", "optic", "cmd"], default="auto")
     ap.add_argument("--timeout", type=int, default=None)
     ap.add_argument("--stream", action="store_true")
-    ap.add_argument("--planner-args", default="-h ngc -s gbfs -dap")
+    ap.add_argument("--planner-args", default="-planner opt-hrmax")
     ap.add_argument(
         "--java-opts",
         default="",

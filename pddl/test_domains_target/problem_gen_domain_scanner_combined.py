@@ -5,4 +5,4 @@ from problem_gen_common import main_for_domain_file
 
 
 if __name__ == "__main__":
-    raise SystemExit(main_for_domain_file("domain_scanner_combined.pddl"))
+    raise SystemExit(main_for_domain_file("domain_classic_scanner_combined.pddl"))

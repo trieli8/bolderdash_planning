@@ -479,11 +479,14 @@ def solve_with_fd(
 
         extra_args = shlex.split(planner_args or "")
         if optimal:
-            # Optimal: A* with IPDB heuristic (handles ADL after compilation better than lmcut alias).
+            # Optimal: lazy A* (lazy_wastar w=1) with the blind heuristic.
+            # Must use LazySearch, not astar()/EagerSearch: only LazySearch
+            # intercepts __FORCED__ physics actions and auto-applies them at
+            # zero cost (see lazy_search.cc). w=1 + blind (admissible) with
+            # lazy_wastar's default reopen_closed=true keeps this optimal.
             default_search_args = [
-                # "--search", "astar(merge_and_shrink(shrink_strategy=shrink_bisimulation(greedy=false),merge_strategy=merge_sccs(order_of_sccs=topological,merge_selector=score_based_filtering(scoring_functions=[goal_relevance(),dfp(),total_order()])),label_reduction=exact(before_shrinking=true,before_merging=false),max_states=50k,threshold_before_merge=1))"
                 "--search",
-                "astar(blind(verbosity=debug))",
+                "lazy_wastar([blind(verbosity=debug)], w=1)",
             ]
             tag = "fd-opt"
         else:
@@ -491,7 +494,7 @@ def solve_with_fd(
             domain_name = domain.name.lower()
             if "scanner_separated" in domain_name or "scaner_separated" in domain_name:
                 # Greedy FF gets stuck on scanner-separated (many forced actions + delete effects).
-                search = "astar(blind())"
+                search = "astar(ff())"
                 tag = "fd"
             elif keep_searching:
                 search = "iterated([lazy_greedy([ff()], preferred=[ff()])], repeat_last=true)"

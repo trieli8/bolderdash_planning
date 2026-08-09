@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="120" viewBox="0 0 760 120">
+<defs>
+<marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+<path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+</marker>
+<marker id="arrow-soft" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+<path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+</marker>
+</defs>
+<rect x="0" y="0" width="100%" height="100%" fill="#fbfbf7"/>
+<text x="40" y="38" font-size="24" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="#111827">Map Legend</text>
+<rect x="20.00" y="36.00" width="720.00" height="64.00" rx="18.00" ry="18.00" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.20" opacity="1.000"/>
+<rect x="20.00" y="64.00" width="18.00" height="18.00" rx="6.00" ry="6.00" fill="#16a34a" stroke="#16a34a" stroke-width="1.20" opacity="0.950"/>
+<text x="29.00" y="77.00" text-anchor="middle" font-size="10" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="#ffffff">F</text>
+<text x="46.00" y="77.00" text-anchor="start" font-size="11" font-family="Arial, Helvetica, sans-serif" font-weight="400" fill="#334155">first-cell</text>
+<rect x="180.00" y="64.00" width="18.00" height="18.00" rx="6.00" ry="6.00" fill="#2563eb" stroke="#2563eb" stroke-width="1.20" opacity="0.950"/>
+<text x="189.00" y="77.00" text-anchor="middle" font-size="10" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="#ffffff">C</text>
+<text x="206.00" y="77.00" text-anchor="start" font-size="11" font-family="Arial, Helvetica, sans-serif" font-weight="400" fill="#334155">current-cell</text>
+<rect x="340.00" y="64.00" width="18.00" height="18.00" rx="6.00" ry="6.00" fill="#d97706" stroke="#d97706" stroke-width="1.20" opacity="0.950"/>
+<text x="349.00" y="77.00" text-anchor="middle" font-size="10" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="#ffffff">N</text>
+<text x="366.00" y="77.00" text-anchor="start" font-size="11" font-family="Arial, Helvetica, sans-serif" font-weight="400" fill="#334155">next-cell</text>
+<rect x="500.00" y="64.00" width="18.00" height="18.00" rx="6.00" ry="6.00" fill="#7c3aed" stroke="#7c3aed" stroke-width="1.20" opacity="0.950"/>
+<text x="509.00" y="77.00" text-anchor="middle" font-size="10" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="#ffffff">L</text>
+<text x="526.00" y="77.00" text-anchor="start" font-size="11" font-family="Arial, Helvetica, sans-serif" font-weight="400" fill="#334155">last-cell</text>
+<rect x="660.00" y="64.00" width="18.00" height="18.00" rx="6.00" ry="6.00" fill="#dc2626" stroke="#dc2626" stroke-width="1.20" opacity="0.950"/>
+<text x="669.00" y="77.00" text-anchor="middle" font-size="10" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="#ffffff">D</text>
+<text x="686.00" y="77.00" text-anchor="start" font-size="11" font-family="Arial, Helvetica, sans-serif" font-weight="400" fill="#334155">danger-cell</text>
+</svg>
