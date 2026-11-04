@@ -157,10 +157,11 @@
       (not (agent-at ?from))
       (agent-at ?to)
 
+      (not (empty ?to))
+      (empty ?from)
+
       (not (stone ?to))
       (not (falling ?to))
-      (empty ?to)
-      ; (was_empty ?to) TODO THINK ABOUT THIS
 
       (not (empty ?stone_dest))
       (stone ?stone_dest)
