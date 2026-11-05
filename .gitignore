@@ -16,3 +16,5 @@ __pycache__/
 .vscode/
 
 *.jar
+# compiled engine tracer (tools/sim_check/fuzz.py builds it on demand)
+tools/sim_check/build/

@@ -17,6 +17,7 @@ import problem_gen_scanner_separated as scanner_sep_gen  # type: ignore  # noqa:
 import problem_gen_plus_from_domain as plus_from_gen  # type: ignore  # noqa: E402
 import problem_gen_plus_scanner_separated as plus_scanner_gen  # type: ignore  # noqa: E402
 import problem_gen_plus_scanner_separated_events_fluents as plus_events_fluent_gen  # type: ignore  # noqa: E402
+import problem_gen_rowscan as rowscan_gen  # type: ignore  # noqa: E402
 
 
 SOURCE_TO_KIND = {
@@ -28,6 +29,7 @@ SOURCE_TO_KIND = {
     "domain_plus_scanner_separated.pddl": "plus_scanner",
     "domain_plus_scanner_separated_events.pddl": "plus_scanner",
     "domain_plus_scanner_separated_events_fluents.pddl": "plus_scanner_events_fluents",
+    "domain_rowscan.pddl": "rowscan",
 }
 
 SCANNER_CHAIN_PREDICATES = ("first-cell", "next-cell", "last-cell")
@@ -141,6 +143,8 @@ def _generate(kind: str, level_str: str, problem_name: str, domain_name: str, ag
         return plus_scanner_gen.generate_compact_problem(level_str, problem_name, domain_name)
     if kind == "plus_scanner_events_fluents":
         return plus_events_fluent_gen.generate_compact_problem(level_str, problem_name, domain_name)
+    if kind == "rowscan":
+        return rowscan_gen.generate_problem(level_str, problem_name, domain_name)
     raise ValueError(f"Unsupported generator kind: {kind}")
 
 

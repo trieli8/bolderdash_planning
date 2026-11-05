@@ -10,7 +10,9 @@ This folder contains the generated matrix requested from:
 ## Source Mapping
 
 - `domain_*` and `domain_FA_*`
-  - `*_scanner_combined` -> `pddl/domain_scanner_combined.pddl`
+  - `*_scanner_combined` -> `pddl/domain_rowscan.pddl` (row-gated scanner, verified
+    against the engine with `tools/sim_check/fuzz.py`; regenerate both files with
+    `python pddl/make_rowscan_variants.py`; problems from `pddl/problem_gen_rowscan.py`)
   - `*_scanner_separated` -> `pddl/domain_scanner_separated.pddl`
   - `*_non-scanner_combined` -> `pddl/domain_merged.pddl`
   - `*_non-scanner_separated` -> `pddl/domain.pddl`
@@ -52,3 +54,21 @@ Behavior:
 
 - These scripts print the generated problem to `stdout` only.
 - They do not write `<problem>.pddl` files anywhere.
+
+## Engine conformance (tools/sim_check/fuzz.py)
+
+Differential test against the stonesngems engine (random levels up to 6x7,
+25-step random walks; full board, falling state, agent death and target-gem
+position compared after every tick):
+
+| variant | matching cases |
+|---|---|
+| `*_scanner_combined` (row-gated, `pddl/domain_rowscan.pddl`) | all (thousands of random cases, regression cases, real benchmark levels) |
+| `*_scanner_combined` (previous version) | 69/150 |
+| `*_scanner_separated` | 28/60 |
+| `*_non-scanner_combined` | 22/60 |
+| `*_non-scanner_separated` | 0/60 (no `move_noop`: the agent cannot wait) |
+
+The remaining variants still encode the old rules (e.g. falling gems do not
+crush the agent, steel walls and exits are treated as rounded, the target-gem
+marker does not follow a falling gem).

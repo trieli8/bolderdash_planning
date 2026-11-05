@@ -907,10 +907,10 @@ def dump_pddl_trace(
 
 
 def select_problem_gen(domain: Path) -> Path:
-    domain_name = domain.name.lower()
-    if "scanner_separated" in domain_name or "scaner_separated" in domain_name:
-        return repo_root() / "pddl" / "problem_gen_scanner_separated.py"
-    return repo_root() / "pddl" / "problem_gen.py"
+    # Same lookup as tools/plan.py (domain-matched wrappers, `; source:` header).
+    from plan import select_problem_gen as plan_select_problem_gen
+
+    return plan_select_problem_gen(domain)
 
 
 def prepare_problem_and_level(

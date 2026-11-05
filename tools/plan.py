@@ -200,6 +200,16 @@ def write_direction_plan(path: Path, actions: List[Tuple[str, List[str]]]) -> No
             continue
         if name.lower()[0:2] == "fa" or "__forced__" in name.lower():
             continue
+        if name.lower() == "move_noop":
+            tokens.append("noop")
+            continue
+        if name.lower().startswith("move_") and len(args) >= 2:
+            # Agent actions in the scanner domains take (?from ?to ...) first;
+            # later arguments (scan start, rows, ...) must not be read as a move.
+            direction = _dir_from_coords(args[0], args[1])
+            if direction:
+                tokens.append(direction)
+                continue
         if len(args) >= 3:
             direction = _dir_from_coords(args[1], args[2])
             if direction:
@@ -608,6 +618,7 @@ def select_problem_gen(domain: Path) -> Path:
         "domain.pddl": "problem_gen.py",
         "domain_merged.pddl": "problem_gen.py",
         "domain_scanner_combined.pddl": "problem_gen.py",
+        "domain_rowscan.pddl": "problem_gen_rowscan.py",
         "domain_scanner_separated.pddl": "problem_gen_scanner_separated.py",
     }
 

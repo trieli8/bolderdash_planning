@@ -219,6 +219,42 @@ python tools/plot_plus_time_breakdown.py \
 - Creates a stacked bar chart from `*.stdout.txt` files.
 - Stack segments: `Grounding Time`, `Planning Time`, `Heuristic Time`, `Search Time`.
 
+### Scanner model (`pddl/domain_rowscan.pddl`)
+
+The scanner-combined test domains (`pddl/test_domains_target/domain_{classic,FA}_scanner_combined.pddl`)
+are generated from `pddl/domain_rowscan.pddl` by `python pddl/make_rowscan_variants.py`;
+problems come from `pddl/problem_gen_rowscan.py` (picked automatically through the
+`; source:` header).
+
+- Matches the stonesngems engine tick for tick for agent, empty, dirt, stone, gem,
+  brick wall (rounded) and steel wall / exit / border (not rounded): agent first,
+  then a row-major scan with the engine's `has_updated` skipping, falling stones
+  *and gems* crush the agent, pushed stones are skipped in the push tick, and the
+  target-gem marker moves with its gem.
+- Physics is deterministic: while a tick runs exactly one physics action is
+  applicable and no `move_*` action is, so the classic and `__FORCED__` variants
+  behave identically.
+- Fast: walls are left out of the scan, and each row has a gate that skips the row
+  in one step unless something in it or in the row below changed since it was last
+  scanned. On a 20x38 benchmark level this is ~16.6k operators versus ~189k for the
+  previous scanner model (after Fast Downward-style disjunction splitting), and a
+  typical tick takes 96 physics steps instead of 761 (20 row gates + the two rows
+  around the agent; the first few ticks of a level cost more while its initial
+  rockfall settles).
+- Not modelled: the level time limit, and engine elements other than the ones above
+  (the generator treats them as flat walls).
+
+### Differential test against the engine
+
+```bash
+python3 tools/sim_check/fuzz.py --domain pddl/test_domains_target/domain_FA_scanner_combined.pddl
+python3 tools/sim_check/fuzz.py --domain pddl/domain_rowscan.pddl --cases-file tools/sim_check/regression_cases.txt
+```
+
+Runs random levels and walks through the real engine (compiled from `stonesandgem/src`)
+and through the grounded PDDL model, and compares the whole board after every tick.
+See `tools/sim_check/README.md`.
+
 ### Validate PDDL vs native trace
 
 ```bash
