@@ -240,8 +240,8 @@ problems come from `pddl/problem_gen_rowscan.py` (picked automatically through t
   blocks with their own gates. Gem collection is a single `move_into_gem` action:
   a negated `target-gem` precondition used to be split by Fast Downward into one
   operator per cell (~1.2M operators on a 20x38 level, which timed out in the
-  translator); now that level has ~18k operators and solves in ~10 s, at ~117
-  physics steps per tick. See `pddl/test_domains_target/README.md` ("Performance").
+  translator); now that level has ~18k operators and solves in about 40 s end to
+  end (about 27 s of it translation), at ~117 physics steps per tick. See `pddl/test_domains_target/README.md` ("Performance").
 - Not modelled: the level time limit, and engine elements other than the ones above
   (the generator treats them as flat walls).
 

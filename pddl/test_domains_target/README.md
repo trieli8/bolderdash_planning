@@ -213,10 +213,12 @@ depend on `agent-alive`), so such a tick still ends in a unique state; no
 
 `tools/sim_check/model_stats.py` with Fast Downward 24.06.1
 (`lazy_greedy([ff()],preferred=[ff()])`, the default of `tools/plan.py`;
-300 s per run, one core, translation included) on the classic files.
+300 s per run, the timeout counting translation) on the classic files.
 "before" is the previous version of each model, "operator fix only" adds just
-the first change listed below, "now" is the current version. Cells: total time /
-expansions / translator operators. steps/tick: physics actions per game tick
+the first change listed below, "now" is the current version. Cells: search
+time (Fast Downward's "Total time", which does not include translation) /
+expansions / translator operators; end-to-end wall times on the 20x38 levels,
+translation included, are in the list below the tables. steps/tick: physics actions per game tick
 along the same random walks (forced-action semantics); states/tick: distinct
 intermediate states of a tick when every order of physics actions is explored
 (capped at 5,000).
@@ -289,10 +291,15 @@ What changed, and what each change bought (measured on these levels):
   levels, with the same number of expansions as before on the levels both
   versions solve.
 - **Row gates for scanner-separated** (and walls out of the scan). 1,250 ->
-  ~300 physics steps per tick on 20x38; 125 s -> 30-41 s there.
+  ~300 physics steps per tick on 20x38; search 125 s -> 30-41 s there, end to
+  end (translation included, idle machine) 153-159 s -> 53-61 s.
 - **Column-block gates for scanner-combined** on wide levels. 176-203 -> 117-135
-  steps per tick and ~40% fewer expansions on 20x38 (13.0 -> 10.0 s,
-  16.0 -> 12.6 s); unchanged on levels up to 16 columns (no block gates).
+  steps per tick and ~40% fewer expansions on 20x38, search 13.9-16.8 s ->
+  10.4-13.0 s; but translation takes 4-8 s longer (more action parameters), so
+  end to end it is no faster with Fast Downward (37.9-39.8 s -> 38.4-43.8 s).
+  It does help planners that pay per physics step (forced-action replays
+  below: 23,945 -> 13,893 steps per plan). Levels up to 16 columns get no
+  block gates.
 - **Dirty marking for the order-free models.** 125 -> 5-7 (combined) and
   612 -> 16-21 (separated) physics steps per tick on 20x38, and up to 75x fewer
   expansions on the medium levels. The 20x38 levels still time out with a
