@@ -324,6 +324,10 @@ class Task:
             s = self.static_index.get((lit[0], i, a), set())
             atoms = s if atoms is None else atoms & s
         if atoms is None:
+            if any(a.startswith("?") and a != var for a in args):
+                # nothing bound and other free variables: projecting every
+                # atom of the predicate costs more than it prunes
+                return None
             atoms = self.static_by_pred.get(lit[0], set())
         return {atom[1 + pos_var[0]] for atom in atoms
                 if all(atom[1 + i] == atom[1 + pos_var[0]] for i in pos_var[1:])}
