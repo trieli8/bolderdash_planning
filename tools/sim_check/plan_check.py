@@ -68,6 +68,18 @@ class MacroModel:
                 elif atom[0] == "target-gem":
                     self.target_atoms[aid] = rc
         self.physics_steps = 0
+        # open-cell adjacency (4-neighbourhood) and per-cell stone atoms for the heuristic
+        open_cells = {rc for rc in self.agent_atoms.values()}
+        self.neighbours: Dict[Tuple[int, int], List[Tuple[int, int]]] = {
+            (r, c): [n for n in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)) if n in open_cells]
+            for (r, c) in open_cells
+        }
+        self.stone_atoms: Dict[int, Tuple[int, int]] = {}
+        for aid, atom in enumerate(task.atoms):
+            if len(atom) == 2 and atom[0] == "stone":
+                m = CELL_RE.match(atom[1])
+                if m:
+                    self.stone_atoms[aid] = (int(m.group(1)), int(m.group(2)))
 
     @staticmethod
     def apply_inplace(ga: GroundAction, state: Set[int]) -> None:
@@ -118,14 +130,27 @@ class MacroModel:
         return None
 
     def h(self, state) -> int:
+        """Shortest path from the agent to the target gem through cells the
+        agent could enter (stones block); Manhattan distance + 100 if none."""
         a = self.agent(state)
         if a is None:
             return 10 ** 6
-        for aid in state:
-            rc = self.target_atoms.get(aid)
-            if rc:
-                return abs(rc[0] - a[0]) + abs(rc[1] - a[1])
-        return 0
+        target = next((self.target_atoms[aid] for aid in state if aid in self.target_atoms), None)
+        if target is None:
+            return 0
+        stones = {self.stone_atoms[aid] for aid in state if aid in self.stone_atoms}
+        frontier, dist = [a], {a: 0}
+        while frontier:
+            nxt = []
+            for cell in frontier:
+                if cell == target:
+                    return dist[cell]
+                for n in self.neighbours.get(cell, ()):
+                    if n not in dist and n not in stones:
+                        dist[n] = dist[cell] + 1
+                        nxt.append(n)
+            frontier = nxt
+        return abs(target[0] - a[0]) + abs(target[1] - a[1]) + 100
 
 
 def gbfs(model: MacroModel, max_expansions: int, timeout: float):
