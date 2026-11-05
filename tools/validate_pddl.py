@@ -476,6 +476,11 @@ def run_forced_actions(
         else:
             ops_to_apply = applicable_ops
         for op in sorted(ops_to_apply, key=lambda o: " ".join(o.name_tokens)):
+            # Several forced ops can be applicable at once (order-free physics);
+            # applying one may disable another, so re-check before applying.
+            apply_axioms(state, axioms)
+            if not applicable(op, state):
+                continue
             apply(op, state)
             executed.append(_action_from_op(op))
             steps += 1
@@ -907,10 +912,10 @@ def dump_pddl_trace(
 
 
 def select_problem_gen(domain: Path) -> Path:
-    domain_name = domain.name.lower()
-    if "scanner_separated" in domain_name or "scaner_separated" in domain_name:
-        return repo_root() / "pddl" / "problem_gen_scanner_separated.py"
-    return repo_root() / "pddl" / "problem_gen.py"
+    # Same lookup as tools/plan.py (domain-matched wrappers, `; source:` header).
+    from plan import select_problem_gen as plan_select_problem_gen
+
+    return plan_select_problem_gen(domain)
 
 
 def prepare_problem_and_level(

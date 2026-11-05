@@ -1,0 +1,38 @@
+# name;level (engine ids, 90/91 = planner target gem);actions (0 noop 1 up 2 right 3 down 4 left)
+# A resting stone on a stone that is falling at level start: once the lower one
+# settles it becomes rounded and the upper one must roll (row above re-scanned).
+settle_wakes_row_above_left;4|3|0|999|01|03|01|01|04|01|02|02|02|00|02|02;0000
+settle_wakes_row_above_right;4|3|0|999|02|03|01|02|04|01|02|02|02|02|02|00;0000
+settle_wakes_gem_above;4|3|0|999|01|90|01|01|06|01|02|02|02|00|02|02;0000
+# Falling gem lands on the agent: the agent dies (old model kept it alive).
+gem_crushes_agent;3|1|0|999|05|01|00;000
+# Falling gem dropped onto the agent after it walks underneath.
+gem_crushes_walker;3|2|0|999|05|01|01|01|02|00;040
+# Stone resting on the agent does not roll off it (agent is not rounded).
+no_roll_off_agent;3|3|0|999|01|03|01|01|00|01|01|02|01;000
+# Pushed stone is skipped in the push tick even with empty space below.
+push_skips_tick;3|4|0|999|00|03|01|01|02|02|01|01|02|02|02|02;2000
+# Steel wall (19) is not rounded: nothing rolls off it; brick wall (18) is.
+steel_not_rounded;3|3|0|999|01|03|01|01|19|01|00|01|01;000
+brick_rounded;3|3|0|999|01|03|01|01|18|01|00|01|01;000
+# Closed exit is not rounded either.
+exit_not_rounded;3|3|0|999|01|03|01|01|07|01|00|01|01;000
+# Target gem keeps its identity while falling and rolling.
+target_falls_and_rolls;4|3|0|999|01|90|01|01|01|01|01|03|01|00|02|02;00000
+# Roll right only when roll left is blocked; roll right target is skipped this tick.
+roll_right_priority;3|4|0|999|02|03|01|01|02|03|01|01|02|02|02|00;000
+# Order-free models (non-scanner): each case is nondeterministic if one cell is
+# dropped from the conflict window, i.e. a pending object updated before the
+# pending object in that cell (row r, column k = the later object).
+# (r-1,k-2): the upper stone rolls right only while the cell this stone rolls left into is empty.
+window_up_left2;3|4|0|999|03|01|01|00|18|01|03|02|02|01|18|02;0
+# (r-1,k+2): the upper stone rolls left only while the cell this stone rolls right into is empty.
+window_up_right2;3|4|0|999|02|01|03|00|03|01|18|02|18|01|02|02;0
+# (r,k-2)
+window_left2;6|6|0|999|90|01|18|05|01|01|03|05|05|04|00|06|04|03|05|03|01|18|01|03|01|03|02|01|01|05|01|18|03|01|02|01|03|01|18|03;1
+# (r-1,k-1)
+window_up_left;4|7|0|999|18|00|01|01|01|02|03|06|02|03|03|03|02|05|02|02|03|18|01|02|90|01|02|01|18|01|02|05;11
+# (r-1,k)
+window_up;4|3|0|999|01|03|18|02|02|03|03|01|03|01|02|00;214
+# (r-1,k+1)
+window_up_right;5|5|0|999|90|02|01|03|05|01|03|00|03|03|01|02|01|01|19|01|01|05|01|03|01|01|03|01|02;4

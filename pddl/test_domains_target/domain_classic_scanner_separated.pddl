@@ -1,11 +1,44 @@
 ; Generated test domain variant
 ; variant: domain_scanner_separated.pddl
-; source: pddl/domain_scanner_separated.pddl
+; source: pddl/domain_cellscan_separated.pddl
+; regenerate with: python pddl/make_target_variants.py
+; Boulder Dash (stonesngems engine) - cell-by-cell scanner, separated check/act actions.
+;
+; Mirrors stonesandgem/src/stonesngems_base.cpp (RNDGameState::apply_action)
+; exactly for agent / empty / dirt / stone / gem / walls:
+;   * each tick the agent acts first, then every cell is visited in row-major
+;     order; an object that moved into a cell later in the scan (fall, roll
+;     right, push) is marked updated and skipped for the rest of the tick
+;     (engine: has_updated);
+;   * a falling stone OR gem landing on the agent kills it;
+;   * only resting stones/gems and brick walls (id 18) are rounded; steel
+;     walls, exits and the level border are not, and the agent is not;
+;   * pushed stones are skipped in the push tick and are falling iff the cell
+;     below their destination is empty;
+;   * the target-gem marker travels with its gem.
+;
+; Style: the scan pointer visits one cell at a time.  For a stone/gem the
+; engine's decision is taken by separate check actions
+;   check_fall       -> can_fall | not_fall | fall_on_agent
+;   check_roll_left  -> can_roll_left | not_roll_left
+;   check_roll_right -> can_roll_right | not_roll_right
+; followed by one act action (stone_/gem_ fall / roll, or stone_gem_settle),
+; and advance_scan.  Cells without a pending object are passed by skip_cell.
+;
+; Agent actions are the move_* actions; every other action is physics and is
+; deterministic: while a tick is in progress exactly one of them is
+; applicable and no move_* action is.  The test-domain variants
+; (pddl/test_domains_target/domain_{classic,FA}_scanner_separated.pddl) are
+; generated with
+;   python pddl/make_target_variants.py
+;
+; Problems: pddl/problem_gen_cellscan.py
+; Differential test against the engine: tools/sim_check/fuzz.py
 (define (domain mine-tick-gravity)
-  (:requirements :strips :typing :negative-preconditions :disjunctive-preconditions :universal-preconditions :conditional-effects :action-costs)
+  (:requirements :strips :typing :negative-preconditions :disjunctive-preconditions :conditional-effects :action-costs)
 
   (:types
-    cell real-cell border-cell - cell
+    real-cell border-cell - cell
   )
 
   (:functions
@@ -13,685 +46,322 @@
   )
 
   (:predicates
-    ;; layout / topology
-    (up ?from ?to - cell)
-    (down ?from ?to - cell)
-    (right-of ?from ?to - cell)
-
-    (border-cell ?c - border-cell)
-    (real-cell ?c - real-cell)
-
-    ;; linear scan order (top-left -> bottom-right)
-    (first-cell ?c - real-cell)
-    (last-cell ?c - border-cell)
+    ;; ---- static ----
+    (up ?from ?to - cell)              ; ?to is directly above ?from
+    (down ?from ?to - cell)            ; ?to is directly below ?from
+    (right-of ?from ?to - cell)        ; ?to is directly right of ?from
+    (brick ?c - cell)                  ; any wall inside the level
+    (rounded-wall ?c - cell)           ; brick wall (id 18): things roll off it
+    (flat-wall ?c - cell)              ; steel wall / exit / level border
+    (first-cell ?c - real-cell)        ; scan order: top-left ...
     (next-cell ?c1 - real-cell ?c2 - cell)
+    (last-cell ?c - border-cell)       ; ... -> end-of-scan sentinel
 
-    ;; scan pointer for this tick
-    (scan-at ?c - cell)
-    (scan-required)
-    (scan-complete)
-    (scan-active)
-
-    ;; updated-in-this-tick flags
-    (updated ?c - cell)
-
-    ;; cell contents
+    ;; ---- cell contents (exactly one per cell inside the level) ----
     (agent-at ?c - cell)
     (empty ?c - cell)
     (dirt ?c - cell)
     (stone ?c - cell)
     (gem ?c - cell)
     (target-gem ?c - cell)
-    (falling ?c - cell)
-    (brick ?c - cell)
+    (falling ?c - cell)                ; stone/gem state; resting otherwise
 
-    ;; high-level state
-    (agent-alive)
-    (got-gem)
-    (crushed)
+    ;; ---- scan bookkeeping ----
+    (scan-required)                    ; agent moved, tick not started
+    (scan-complete)                    ; between ticks
+    (scan-at ?c - cell)
+    (updated ?c - cell)                ; object moved here this tick (ahead of the scan)
 
-    (can_fall)
-    (can_roll_left)
-    (can_roll_right)
+    ;; ---- per-cell decision phases (global: one cell at a time) ----
     (check_fall)
     (check_roll_left)
     (check_roll_right)
     (ready_to_move)
+    (can_fall)
+    (can_roll_left)
+    (can_roll_right)
+    (acted)
+
+    ;; ---- high level ----
+    (agent-alive)
+    (got-gem)
   )
 
-  ;; ======================================================
-  ;; AGENT MOVEMENT
-  ;; ======================================================
-    (:action move_noop
-        :parameters (?start - real-cell)
-        :precondition (and
-            (agent-alive)
-            (first-cell ?start)
-            (scan-complete)
-        )
-        :effect (and
-            (scan-required)
-            (not (scan-complete))
-            (increase (total-cost) 1)
-        )
-    )
+  ;; ======================================================================
+  ;; AGENT MOVEMENT (only between ticks)
+  ;; ======================================================================
 
-    (:action move_empty
-        :parameters (?from ?to - real-cell)
-        :precondition (and
-            (agent-alive)
-            (agent-at ?from)
-                (or (up ?from ?to)
-                (down ?from ?to)
-                (right-of ?to ?from)
-                (right-of ?from ?to))
-            (empty ?to)
-            (scan-complete)
-        )
-        :effect (and
-            (not (agent-at ?from))
-            (agent-at ?to)
+  (:action move_noop
+    :parameters ()
+    :precondition (and (agent-alive) (scan-complete))
+    :effect (and
+      (not (scan-complete)) (scan-required)
+      (increase (total-cost) 1))
+  )
 
-            (empty ?from)
-            (not (empty ?to))
+  (:action move_empty
+    :parameters (?from ?to - real-cell)
+    :precondition (and
+      (agent-alive) (scan-complete)
+      (agent-at ?from)
+      (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
+      (empty ?to))
+    :effect (and
+      (not (agent-at ?from)) (empty ?from)
+      (not (empty ?to)) (agent-at ?to)
+      (not (scan-complete)) (scan-required)
+      (increase (total-cost) 1))
+  )
 
-            (scan-required)
-            (not (scan-complete))
-            (increase (total-cost) 1)
-        )
-    )
+  ;; Move into dirt (mines it).
+  (:action move_into_dirt
+    :parameters (?from ?to - real-cell)
+    :precondition (and
+      (agent-alive) (scan-complete)
+      (agent-at ?from)
+      (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
+      (dirt ?to))
+    :effect (and
+      (not (agent-at ?from)) (empty ?from)
+      (not (dirt ?to)) (agent-at ?to)
+      (not (scan-complete)) (scan-required)
+      (increase (total-cost) 1))
+  )
 
-    ;; Move into dirt (mines it to empty)
-    (:action move_into_dirt
-        :parameters (?from ?to - real-cell)
-        :precondition (and
-            (agent-alive)
-            (agent-at ?from)
-                (or (up ?from ?to)
-                (down ?from ?to)
-                (right-of ?to ?from)
-                (right-of ?from ?to))
-            (dirt ?to)
-            (scan-complete)
-        )
-        :effect (and
-            (not (agent-at ?from))
-            (agent-at ?to)
+  ;; Collect an ordinary gem (resting or falling).
+  (:action move_into_gem
+    :parameters (?from ?to - real-cell)
+    :precondition (and
+      (agent-alive) (scan-complete)
+      (agent-at ?from)
+      (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
+      (gem ?to) (not (target-gem ?to)))
+    :effect (and
+      (not (agent-at ?from)) (empty ?from)
+      (not (gem ?to)) (not (falling ?to)) (agent-at ?to)
+      (not (scan-complete)) (scan-required)
+      (increase (total-cost) 1))
+  )
 
-            (not (dirt ?to))
+  ;; Collect the distinguished target gem.
+  (:action move_into_target_gem
+    :parameters (?from ?to - real-cell)
+    :precondition (and
+      (agent-alive) (scan-complete)
+      (agent-at ?from)
+      (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
+      (gem ?to) (target-gem ?to))
+    :effect (and
+      (not (agent-at ?from)) (empty ?from)
+      (not (gem ?to)) (not (target-gem ?to)) (not (falling ?to)) (agent-at ?to)
+      (got-gem)
+      (not (scan-complete)) (scan-required)
+      (increase (total-cost) 1))
+  )
 
-            (empty ?from)
-            (not (empty ?to))
+  ;; Horizontal push of a resting stone into an empty cell.  The engine marks
+  ;; the pushed stone updated (it does not move again this tick) and makes it
+  ;; falling iff the cell below its destination is empty.
+  (:action move_push_rock
+    :parameters (?from ?to ?stone_dest - real-cell ?below - cell)
+    :precondition (and
+      (agent-alive) (scan-complete)
+      (agent-at ?from)
+      (or (and (right-of ?from ?to) (right-of ?to ?stone_dest))
+          (and (right-of ?to ?from) (right-of ?stone_dest ?to)))
+      (stone ?to) (not (falling ?to))
+      (empty ?stone_dest)
+      (down ?stone_dest ?below))
+    :effect (and
+      (not (agent-at ?from)) (empty ?from)
+      (not (stone ?to)) (agent-at ?to)
+      (not (empty ?stone_dest)) (stone ?stone_dest) (updated ?stone_dest)
+      (when (empty ?below) (falling ?stone_dest))
+      (not (scan-complete)) (scan-required)
+      (increase (total-cost) 1))
+  )
 
-            (scan-required)
-            (not (scan-complete))
-            (increase (total-cost) 1)
-        )
-    )
-
-    ;; Move into a normal gem.
-    (:action move_into_gem
-        :parameters (?from ?to - real-cell)
-        :precondition (and
-            (agent-alive)
-            (agent-at ?from)
-                (or (up ?from ?to)
-                (down ?from ?to)
-                (right-of ?to ?from)
-                (right-of ?from ?to))
-            (gem ?to)
-            (not (target-gem ?to))
-            (scan-complete)
-        )
-        :effect (and
-            (not (agent-at ?from))
-            (agent-at ?to)
-
-            (empty ?from)
-            (not (empty ?to))
-
-            (not (gem ?to))
-            (not (falling ?to))
-
-            (scan-required)
-            (not (scan-complete))
-            (increase (total-cost) 1)
-        )
-    )
-
-    ;; Move into the distinguished target gem.
-    (:action move_into_target_gem
-        :parameters (?from ?to - real-cell)
-        :precondition (and
-            (agent-alive)
-            (agent-at ?from)
-                (or (up ?from ?to)
-                (down ?from ?to)
-                (right-of ?to ?from)
-                (right-of ?from ?to))
-            (gem ?to)
-            (target-gem ?to)
-            (scan-complete)
-        )
-        :effect (and
-            (not (agent-at ?from))
-            (agent-at ?to)
-
-            (empty ?from)
-            (not (empty ?to))
-
-            (not (gem ?to))
-            (not (target-gem ?to))
-            (not (falling ?to))
-
-            (got-gem)
-
-            (scan-required)
-            (not (scan-complete))
-            (increase (total-cost) 1)
-        )
-    )
-
-    (:action move_push_rock
-        :parameters (?from ?to ?stone_dest - real-cell)
-        :precondition (and
-            (agent-alive)
-            (agent-at ?from)
-            (or
-                (and (right-of ?to ?from) (right-of ?stone_dest ?to))
-                (and (right-of ?from ?to) (right-of ?to ?stone_dest)))
-        (stone ?to)
-        (empty ?stone_dest)
-        (not (falling ?to))
-        (scan-complete)
-        )
-        :effect (and
-            (not (agent-at ?from))
-            (agent-at ?to)
-
-            (not (empty ?to))
-            (empty ?from)
-
-            (not (stone ?to))
-            (stone ?stone_dest)
-
-            (not (empty ?stone_dest))
-            (not (falling ?stone_dest))
-
-            ;; match the updated domain behavior
-            (updated ?to)
-
-            (scan-required)
-            (not (scan-complete))
-            (increase (total-cost) 1)
-        )
-    )
-
-  ;; ======================================================
+  ;; ======================================================================
   ;; SCANNER MOVEMENT
-  ;; ======================================================
-    (:action start_tick
-        :parameters (?start - real-cell)
-        :precondition (and
-            (agent-alive)
-            (first-cell ?start)
-            (scan-required)
-            (not (scan-active))
-        )
-        :effect (and
-            (scan-at ?start)
-            (scan-active)
+  ;; ======================================================================
 
-            (not (can_fall))
-            (not (can_roll_left))
-            (not (can_roll_right))
-            (not (check_roll_left))
-            (not (check_roll_right))
-            (not (ready_to_move))
-            (check_fall)
-        )
-    )
-    
-    (:action advance_scan_no_update
-        :parameters (?c - real-cell ?next - cell)
-        :precondition (and
-            (scan-required)
-            (scan-at ?c)
-            (next-cell ?c ?next)
+  (:action start_tick
+    :parameters (?start - real-cell)
+    :precondition (and (scan-required) (first-cell ?start))
+    :effect (and (not (scan-required)) (scan-at ?start) (check_fall))
+  )
 
-            (or (updated ?c) (brick ?c) (dirt ?c) (empty ?c) (agent-at ?c))
-        )
-        :effect (and
-            (not (scan-at ?c))
-            (not (updated ?c))
-            (scan-at ?next)
+  ;; Nothing to do here: no stone/gem, or an object that already moved this tick.
+  (:action skip_cell
+    :parameters (?c - real-cell ?next - cell)
+    :precondition (and
+      (scan-at ?c) (next-cell ?c ?next) (check_fall)
+      (or (updated ?c) (empty ?c) (dirt ?c) (agent-at ?c) (brick ?c)))
+    :effect (and (not (updated ?c)) (not (scan-at ?c)) (scan-at ?next))
+  )
 
-            (not (can_fall))
-            (not (can_roll_left))
-            (not (can_roll_right))
-            (not (check_roll_left))
-            (not (check_roll_right))
-            (not (ready_to_move))
-            (check_fall)
-        )
-    )
+  ;; The stone/gem of this cell has been handled.
+  (:action advance_scan
+    :parameters (?c - real-cell ?next - cell)
+    :precondition (and (scan-at ?c) (next-cell ?c ?next) (acted))
+    :effect (and (not (acted)) (check_fall) (not (scan-at ?c)) (scan-at ?next))
+  )
 
-    (:action advance_scan
-        :parameters (?c - real-cell ?next - cell)
-        :precondition (and
-            (scan-required)
-            (scan-at ?c)
-            (next-cell ?c ?next)
-            (ready_to_move)
+  (:action end_tick
+    :parameters (?c - border-cell)
+    :precondition (and (scan-at ?c) (last-cell ?c))
+    :effect (and (not (scan-at ?c)) (not (check_fall)) (scan-complete))
+  )
 
-            (updated ?c)
-        )
-        :effect (and
-            (not (scan-at ?c))
-            (not (updated ?c))
-            (scan-at ?next)
+  ;; ======================================================================
+  ;; SCANNER CHECKS (stone or gem that has not moved this tick)
+  ;; ======================================================================
 
-            (not (can_fall))
-            (not (can_roll_left))
-            (not (can_roll_right))
-            (not (check_roll_left))
-            (not (check_roll_right))
-            (not (ready_to_move))
-            (check_fall)
-        )
-    )
+  (:action can_fall
+    :parameters (?c - real-cell ?down - cell)
+    :precondition (and
+      (scan-at ?c) (check_fall)
+      (or (stone ?c) (gem ?c)) (not (updated ?c))
+      (down ?c ?down) (empty ?down))
+    :effect (and (not (check_fall)) (can_fall) (ready_to_move))
+  )
 
-    (:action end_tick
-        :parameters (?c - border-cell)
-        :precondition (and
-            (scan-required)
-            (scan-at ?c)
-            (last-cell ?c)
-        )
-        :effect (and
-            (not (scan-at ?c))
-            (not (scan-required))
-            (scan-complete)
-            (not (scan-active))
+  ;; Falling stone or gem lands on the agent: explosion, agent dies.
+  (:action fall_on_agent
+    :parameters (?c - real-cell ?down - cell)
+    :precondition (and
+      (scan-at ?c) (check_fall)
+      (or (stone ?c) (gem ?c)) (not (updated ?c)) (falling ?c)
+      (down ?c ?down) (agent-at ?down))
+    :effect (and (not (check_fall)) (not (agent-alive)) (acted))
+  )
 
-            (not (can_fall))
-            (not (can_roll_left))
-            (not (can_roll_right))
-            (not (check_roll_left))
-            (not (check_roll_right))
-            (not (ready_to_move))
-            (check_fall)
-        )
-    )
+  (:action not_fall
+    :parameters (?c - real-cell ?down - cell)
+    :precondition (and
+      (scan-at ?c) (check_fall)
+      (or (stone ?c) (gem ?c)) (not (updated ?c))
+      (down ?c ?down) (not (empty ?down))
+      (or (not (falling ?c)) (not (agent-at ?down))))
+    :effect (and (not (check_fall)) (check_roll_left))
+  )
 
-  ;; ======================================================
-  ;; SCANNER CHECKS
-  ;; ======================================================
-    (:action can_fall
-        :parameters (?c - real-cell ?down - cell)
-        :precondition (and
-            (scan-required)
-            (scan-at ?c)
-            (check_fall)
-            (not (updated ?c))
-            (or (stone ?c) (gem ?c))
-            
-            (down ?c ?down)
+  ;; Roll left needs a rounded support (resting stone/gem or brick wall) and
+  ;; empty left and down-left cells (engine: CanRollLeft, tried first).
+  (:action can_roll_left
+    :parameters (?c - real-cell ?down ?left ?down_left - cell)
+    :precondition (and
+      (scan-at ?c) (check_roll_left)
+      (down ?c ?down) (right-of ?left ?c) (down ?left ?down_left)
+      (or (rounded-wall ?down) (and (or (stone ?down) (gem ?down)) (not (falling ?down))))
+      (empty ?left) (empty ?down_left))
+    :effect (and (not (check_roll_left)) (can_roll_left) (ready_to_move))
+  )
 
-            (empty ?down)
-        )
-        :effect (and
-            (can_fall)
-            (not (check_fall))
-            (ready_to_move)
-        )
-    )
+  (:action not_roll_left
+    :parameters (?c - real-cell ?down ?left ?down_left - cell)
+    :precondition (and
+      (scan-at ?c) (check_roll_left)
+      (down ?c ?down) (right-of ?left ?c) (down ?left ?down_left)
+      (or (and (not (rounded-wall ?down))
+               (or (falling ?down) (and (not (stone ?down)) (not (gem ?down)))))
+          (not (empty ?left))
+          (not (empty ?down_left))))
+    :effect (and (not (check_roll_left)) (check_roll_right))
+  )
 
-    (:action not_fall
-        :parameters (?c - real-cell ?down - cell)
-        :precondition (and
-            (scan-required)
-            (scan-at ?c)
-            (check_fall)
-            (not (updated ?c))
-            (or (stone ?c) (gem ?c))
-            
-            (down ?c ?down)
+  (:action can_roll_right
+    :parameters (?c - real-cell ?down ?right ?down_right - cell)
+    :precondition (and
+      (scan-at ?c) (check_roll_right)
+      (down ?c ?down) (right-of ?c ?right) (down ?right ?down_right)
+      (or (rounded-wall ?down) (and (or (stone ?down) (gem ?down)) (not (falling ?down))))
+      (empty ?right) (empty ?down_right))
+    :effect (and (not (check_roll_right)) (can_roll_right) (ready_to_move))
+  )
 
-            (not (empty ?down))
-        )
-        :effect (and
-            (not (can_fall))
-            (not (check_fall))
-            (check_roll_left)
-        )
-    )
+  (:action not_roll_right
+    :parameters (?c - real-cell ?down ?right ?down_right - cell)
+    :precondition (and
+      (scan-at ?c) (check_roll_right)
+      (down ?c ?down) (right-of ?c ?right) (down ?right ?down_right)
+      (or (and (not (rounded-wall ?down))
+               (or (falling ?down) (and (not (stone ?down)) (not (gem ?down)))))
+          (not (empty ?right))
+          (not (empty ?down_right))))
+    :effect (and (not (check_roll_right)) (ready_to_move))
+  )
 
-    (:action can_roll_left
-        :parameters (?c - real-cell ?left ?down_left ?down ?up_left - cell)
-        :precondition (and
-            (scan-required)
-            (scan-at ?c)
-            (check_roll_left)
-            (not (updated ?c))
-            (or (stone ?c) (gem ?c))
-            
-            (right-of ?left ?c)
-            (down ?left ?down_left)
-            (down ?c ?down)
-            (up ?left ?up_left)
+  ;; ======================================================================
+  ;; STONE / GEM ACTS
+  ;; ======================================================================
 
-            (not (agent-at ?down))
-            (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
-            (not (falling ?down))
+  ;; Fall one cell (the object below the scan is skipped when reached).
+  (:action stone_fall
+    :parameters (?c ?down - real-cell)
+    :precondition (and (scan-at ?c) (ready_to_move) (can_fall) (stone ?c) (down ?c ?down))
+    :effect (and
+      (not (stone ?c)) (not (falling ?c)) (empty ?c)
+      (not (empty ?down)) (stone ?down) (falling ?down) (updated ?down)
+      (not (ready_to_move)) (not (can_fall)) (acted))
+  )
 
-            (empty ?left)
-            (empty ?down_left)
-        )
-        :effect (and
-            (can_roll_left)
-            (not (check_roll_left))
-            (ready_to_move)
-        )
-    )
+  (:action gem_fall
+    :parameters (?c ?down - real-cell)
+    :precondition (and (scan-at ?c) (ready_to_move) (can_fall) (gem ?c) (down ?c ?down))
+    :effect (and
+      (not (gem ?c)) (not (falling ?c)) (empty ?c)
+      (when (target-gem ?c) (and (not (target-gem ?c)) (target-gem ?down)))
+      (not (empty ?down)) (gem ?down) (falling ?down) (updated ?down)
+      (not (ready_to_move)) (not (can_fall)) (acted))
+  )
 
-    (:action not_roll_left
-        :parameters (?c - real-cell ?left ?down_left ?down ?up_left - cell)
-        :precondition (and
-            (scan-required)
-            (scan-at ?c)
-            (check_roll_left)
-            (not (updated ?c))
-            (or (stone ?c) (gem ?c))
-            
-            (right-of ?left ?c)
-            (down ?left ?down_left)
-            (down ?c ?down)
-            (up ?left ?up_left)
+  ;; Roll left: the destination is behind the scan, so it needs no updated flag.
+  (:action stone_roll_left
+    :parameters (?c ?left - real-cell)
+    :precondition (and (scan-at ?c) (ready_to_move) (can_roll_left) (stone ?c) (right-of ?left ?c))
+    :effect (and
+      (not (stone ?c)) (not (falling ?c)) (empty ?c)
+      (not (empty ?left)) (stone ?left) (falling ?left)
+      (not (ready_to_move)) (not (can_roll_left)) (acted))
+  )
 
-            (or
-                (agent-at ?down)
-                (and
-                    (not (stone ?down))
-                    (not (gem ?down))
-                    (not (brick ?down))
-                    (not (updated ?down)))
-                (falling ?down)
-                (not (empty ?left))
-                (not (empty ?down_left))
-            )
+  (:action gem_roll_left
+    :parameters (?c ?left - real-cell)
+    :precondition (and (scan-at ?c) (ready_to_move) (can_roll_left) (gem ?c) (right-of ?left ?c))
+    :effect (and
+      (not (gem ?c)) (not (falling ?c)) (empty ?c)
+      (when (target-gem ?c) (and (not (target-gem ?c)) (target-gem ?left)))
+      (not (empty ?left)) (gem ?left) (falling ?left)
+      (not (ready_to_move)) (not (can_roll_left)) (acted))
+  )
 
-        )
-        :effect (and
-            (not (can_roll_left))
-            (not (check_roll_left))
-            (check_roll_right)
-        )
-    )
+  ;; Roll right: the destination is the next cell of the scan, skipped there.
+  (:action stone_roll_right
+    :parameters (?c ?right - real-cell)
+    :precondition (and (scan-at ?c) (ready_to_move) (can_roll_right) (stone ?c) (right-of ?c ?right))
+    :effect (and
+      (not (stone ?c)) (not (falling ?c)) (empty ?c)
+      (not (empty ?right)) (stone ?right) (falling ?right) (updated ?right)
+      (not (ready_to_move)) (not (can_roll_right)) (acted))
+  )
 
-    (:action can_roll_right
-        :parameters (?c - real-cell ?right ?down_right ?down ?up_right - cell)
-        :precondition (and
-            (scan-required)
-            (scan-at ?c)
-            (check_roll_right)
-            (not (updated ?c))
-            (or (stone ?c) (gem ?c))
-            
-            (right-of ?c ?right)
-            (down ?right ?down_right)
-            (down ?c ?down)
-            (up ?right ?up_right)
+  (:action gem_roll_right
+    :parameters (?c ?right - real-cell)
+    :precondition (and (scan-at ?c) (ready_to_move) (can_roll_right) (gem ?c) (right-of ?c ?right))
+    :effect (and
+      (not (gem ?c)) (not (falling ?c)) (empty ?c)
+      (when (target-gem ?c) (and (not (target-gem ?c)) (target-gem ?right)))
+      (not (empty ?right)) (gem ?right) (falling ?right) (updated ?right)
+      (not (ready_to_move)) (not (can_roll_right)) (acted))
+  )
 
-            (not (agent-at ?down))
-            (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
-            (not (falling ?down))
-
-            (empty ?right)
-            (empty ?down_right)
-        )
-        :effect (and
-            (can_roll_right)
-            (not (check_roll_right))
-            (ready_to_move)
-        )
-    )
-
-    (:action not_roll_right
-        :parameters (?c - real-cell ?right ?down_right ?down ?up_right - cell)
-        :precondition (and
-            (scan-required)
-            (scan-at ?c)
-            (check_roll_right)
-            (not (updated ?c))
-            (or (stone ?c) (gem ?c))
-            
-            (right-of ?c ?right)
-            (down ?right ?down_right)
-            (down ?c ?down)
-            (up ?right ?up_right)
-
-            (or
-                (agent-at ?down)
-                (and
-                    (not (stone ?down))
-                    (not (gem ?down))
-                    (not (brick ?down))
-                    (not (updated ?down)))
-                (falling ?down)
-                (not (empty ?right))
-                (not (empty ?down_right))
-            )
-
-        )
-        :effect (and
-            (not (can_roll_right))
-            (not (check_roll_right))
-            (ready_to_move)
-        )
-    )
-
-  ;; ======================================================
-  ;; STONE/GEM MOVEMENT
-  ;; ======================================================
-    (:action stone_fall
-        :parameters (?c ?down - real-cell)
-        :precondition (and
-            (ready_to_move)
-            (scan-required)
-            (scan-at ?c)
-            (not (updated ?c))
-
-            (down ?c ?down)
-            (stone ?c)
-
-            (can_fall)
-        )
-        :effect (and
-            (not (stone ?c))
-            (not (falling ?c))
-            (empty ?c)
-
-            (stone ?down)
-            (falling ?down)
-            (not (empty ?down))
-
-            (updated ?down)
-            (updated ?c)
-        )
-    )
-
-    (:action gem_fall
-        :parameters (?c ?down - real-cell)
-        :precondition (and
-            (ready_to_move)
-            (scan-required)
-            (scan-at ?c)
-            (not (updated ?c))
-
-            (down ?c ?down)
-            (gem ?c)
-
-            (can_fall)
-        )
-        :effect (and
-            (not (gem ?c))
-            (not (falling ?c))
-            (empty ?c)
-
-            (gem ?down)
-            (falling ?down)
-            (not (empty ?down))
-
-            (updated ?down)
-            (updated ?c)
-        )
-    )
-
-    (:action stone_roll_left
-        :parameters (?c ?left - real-cell )
-
-        :precondition (and
-            (ready_to_move)
-            (scan-required)
-            (scan-at ?c)
-            (not (updated ?c))
-
-            (right-of ?left ?c)
-            (stone ?c)
-            
-            (can_roll_left)
-            (not (can_fall))
-        )
-
-        :effect (and
-            (not (stone ?c))
-            (not (falling ?c))
-            (empty ?c)
-
-            (stone ?left)
-            (falling ?left)
-            (not (empty ?left))
-
-            (updated ?c)
-            (updated ?left)
-        )
-    )
-    
-    (:action gem_roll_left
-        :parameters (?c ?left - real-cell )
-
-        :precondition (and
-            (ready_to_move)
-            (scan-required)
-            (scan-at ?c)
-            (not (updated ?c))
-
-            (right-of ?left ?c)
-            (gem ?c)
-            
-            (can_roll_left)
-            (not (can_fall))
-        )
-
-        :effect (and
-            (not (gem ?c))
-            (not (falling ?c))
-            (empty ?c)
-
-            (gem ?left)
-            (falling ?left)
-            (not (empty ?left))
-
-            (updated ?c)
-            (updated ?left)
-        )
-    )
-
-
-    (:action stone_roll_right
-        :parameters (?c ?right - real-cell )
-
-        :precondition (and
-            (ready_to_move)
-            (scan-required)
-            (scan-at ?c)
-            (not (updated ?c))
-
-            (right-of ?c ?right)
-            (stone ?c)
-            
-            (can_roll_right)
-            (not (can_fall))
-            (not (can_roll_left))
-
-        )
-
-        :effect (and
-            (not (stone ?c))
-            (not (falling ?c))
-            (empty ?c)
-
-            (stone ?right)
-            (falling ?right)
-            (not (empty ?right))
-
-            (updated ?c)
-            (updated ?right)
-        )
-    )
-    
-    (:action gem_roll_right
-        :parameters (?c ?right - real-cell )
-
-        :precondition (and
-            (ready_to_move)
-            (scan-required)
-            (scan-at ?c)
-            (not (updated ?c))
-
-            (right-of ?c ?right)
-            (gem ?c)
-            
-            (can_roll_right)
-            (not (can_fall))
-            (not (can_roll_left))
-        )
-
-        :effect (and
-            (not (gem ?c))
-            (not (falling ?c))
-            (empty ?c)
-
-            (gem ?right)
-            (falling ?right)
-            (not (empty ?right))
-
-            (updated ?c)
-            (updated ?right)
-        )
-    )
-
-    (:action stone_gem_noop
-        :parameters (?c - real-cell )
-
-        :precondition (and
-            (ready_to_move)
-            (scan-required)
-            (scan-at ?c)
-            (not (updated ?c))
-            (or (stone ?c) (gem ?c))
-            
-            (not (can_fall))
-            (not (can_roll_left))
-            (not (can_roll_right))
-        )
-
-        :effect (and
-            (updated ?c)
-            (not (falling ?c))
-        )
-    )
-
-
+  ;; Cannot move: a falling object comes to rest, a resting one stays.
+  (:action stone_gem_settle
+    :parameters (?c - real-cell)
+    :precondition (and
+      (scan-at ?c) (ready_to_move)
+      (not (can_fall)) (not (can_roll_left)) (not (can_roll_right)))
+    :effect (and (not (falling ?c)) (not (ready_to_move)) (acted))
+  )
 )
