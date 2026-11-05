@@ -178,6 +178,18 @@ def _collect_effect_preds(eff, out: Set[str]) -> None:
         out.add(head)
 
 
+def _free_vars(f) -> Set[str]:
+    if not isinstance(f, list):
+        return {f} if isinstance(f, str) and f.startswith("?") else set()
+    if f and f[0] in ("forall", "exists"):
+        bound = {v for v, _ in _typed_list(f[1])}
+        return _free_vars(f[2]) - bound
+    out: Set[str] = set()
+    for sub in f[1:] if f and isinstance(f[0], str) else f:
+        out |= _free_vars(sub)
+    return out
+
+
 def _subst(arg: str, binding: Dict[str, str]) -> str:
     return binding.get(arg, arg) if arg.startswith("?") else arg
 
@@ -274,31 +286,52 @@ class Task:
             return (head, *args) in self.static
         return None
 
+    def _lit_candidates(self, lit, var: str, binding: Dict[str, str]) -> Optional[Set[str]]:
+        """Objects var can take so that the static literal lit may hold (None: no bound).
+
+        Handles static atoms whose other arguments are bound, conjunctions
+        (intersection) and disjunctions (union, only if every disjunct bounds
+        var - e.g. the adjacency test of the move actions)."""
+        if not isinstance(lit, list) or not lit:
+            return None
+        head = lit[0]
+        if head in ("and", "or"):
+            subs = [self._lit_candidates(sub, var, binding) for sub in lit[1:]]
+            if head == "and":
+                known = [s for s in subs if s is not None]
+                if not known:
+                    return None
+                out = known[0]
+                for s in known[1:]:
+                    out = out & s
+                return out
+            if not subs or any(s is None for s in subs):
+                return None
+            return set().union(*subs)
+        if head in ("not", "forall", "exists", "imply", "when", "="):
+            return None
+        if head in self.fluent_preds or var not in lit[1:]:
+            return None
+        args = [_subst(a, binding) for a in lit[1:]]
+        pos_var = [i for i, a in enumerate(lit[1:]) if a == var]
+        # Atoms that agree with the bound arguments (other unbound variables
+        # are projected away), e.g. (marks ?c ?m1 ?m2 ?m3 ?m4) with ?c bound
+        # gives ?m1 a single candidate.
+        atoms: Optional[Set[Tuple[str, ...]]] = None
+        for i, a in enumerate(args):
+            if a.startswith("?"):
+                continue
+            s = self.static_index.get((lit[0], i, a), set())
+            atoms = s if atoms is None else atoms & s
+        if atoms is None:
+            atoms = self.static_by_pred.get(lit[0], set())
+        return {atom[1 + pos_var[0]] for atom in atoms
+                if all(atom[1 + i] == atom[1 + pos_var[0]] for i in pos_var[1:])}
+
     def _candidates(self, pre, var: str, typ: str, binding: Dict[str, str]) -> Iterable[str]:
         """Candidate objects for var from top-level static conjuncts."""
         domain = self.objects_of_type.get(typ, [])
-        conj = pre[1:] if pre and pre[0] == "and" else [pre]
-        best: Optional[Set[str]] = None
-        for lit in conj:
-            if not isinstance(lit, list) or not lit or lit[0] in ("and", "or", "not", "forall", "exists", "imply", "when", "="):
-                continue
-            if lit[0] in self.fluent_preds or var not in lit[1:]:
-                continue
-            args = [_subst(a, binding) for a in lit[1:]]
-            # need every other position bound (or equal to var)
-            pos_var = [i for i, a in enumerate(lit[1:]) if a == var]
-            others_bound = all(not a.startswith("?") or lit[1 + i] == var for i, a in enumerate(args))
-            if not others_bound:
-                continue
-            cand: Optional[Set[str]] = None
-            for i, a in enumerate(args):
-                if lit[1 + i] == var:
-                    continue
-                s = {atom[1 + pos_var[0]] for atom in self.static_index.get((lit[0], i, a), ())}
-                cand = s if cand is None else cand & s
-            if cand is None:
-                cand = {atom[1 + pos_var[0]] for atom in self.static_by_pred.get(lit[0], ())}
-            best = cand if best is None else best & cand
+        best = self._lit_candidates(pre if pre and pre[0] == "and" else ["and", pre], var, binding)
         if best is None:
             return domain
         dom_set = set(domain)
@@ -308,6 +341,13 @@ class Task:
         params = act.params
         names = [p for p, _ in params]
         types = dict(params)
+        # Top-level conjuncts with their variables: after binding a parameter,
+        # only the conjuncts that mention it are re-checked against the static
+        # facts (re-evaluating the whole precondition at every partial binding
+        # dominated grounding time).
+        conj = act.pre[1:] if act.pre and act.pre[0] == "and" else [act.pre]
+        checks = [(c, _free_vars(c)) for c in conj
+                  if isinstance(c, list) and c and c[0] not in ("forall", "exists")]
 
         def rec(binding: Dict[str, str], remaining: List[str]):
             if not remaining:
@@ -323,9 +363,10 @@ class Task:
                     if len(cands) <= 1:
                         break
             rest = [v for v in remaining if v != best_var]
+            ready = [c for c, vs in checks if best_var in vs]
             for obj in best_cands:
                 binding[best_var] = obj
-                if self._eval_partial(act.pre, binding) is not False:
+                if all(self._eval_partial(c, binding) is not False for c in ready):
                     yield from rec(binding, rest)
                 del binding[best_var]
 
@@ -442,13 +483,21 @@ class Task:
             init_counts[p] = init_counts.get(p, 0) + 1
         self.index: Dict[int, List[GroundAction]] = {}
         self.unindexed: List[GroundAction] = []
+        conj_keys = []
+        freq: Counter = Counter()
         for ga in self.ground_actions:
             conj = ga.pre[1] if ga.pre[0] == "and" else (ga.pre,)
             keys = [g[1] for g in conj if g[0] == "atom"]
+            conj_keys.append(keys)
+            freq.update(keys)
+        for ga, keys in zip(self.ground_actions, conj_keys):
             if not keys:
                 self.unindexed.append(ga)
                 continue
-            key = min(keys, key=lambda a: (init_counts.get(self.atoms[a][0], 0), a))
+            # Index under the most selective precondition atom: the one shared
+            # by the fewest actions (a nullary phase flag such as check_fall is
+            # shared by thousands and would make every lookup test them all).
+            key = min(keys, key=lambda a: (freq[a], init_counts.get(self.atoms[a][0], 0), a))
             self.index.setdefault(key, []).append(ga)
         self.index_keys = frozenset(self.index)
 
