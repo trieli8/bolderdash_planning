@@ -84,10 +84,10 @@ python3 tools/sim_check/fuzz.py --domain pddl/test_domains_target/<variant>.pddl
 
 | variant | source | random (500) | regression | physics |
 |---|---|---|---|---|
-| `*_scanner_combined` | `domain_rowscan.pddl` | all (thousands of cases, also real benchmark levels) | 12/12 | one applicable action per step |
-| `*_scanner_separated` | `domain_cellscan_separated.pddl` | 500/500 | 12/12 | one applicable action per step |
-| `*_non-scanner_combined` | `domain_orderfree_combined.pddl` | 500/500 | 12/12 | unique end-of-tick state, objects in any admissible order |
-| `*_non-scanner_separated` | `domain_orderfree_separated.pddl` | 500/500 | 12/12 | unique end-of-tick state, objects in any admissible order |
+| `*_scanner_combined` | `domain_rowscan.pddl` | all (thousands of cases, also real benchmark levels) | 18/18 | one applicable action per step |
+| `*_scanner_separated` | `domain_cellscan_separated.pddl` | 500/500 | 18/18 | one applicable action per step |
+| `*_non-scanner_combined` | `domain_orderfree_combined.pddl` | 500/500 | 18/18 | unique end-of-tick state, objects in any admissible order |
+| `*_non-scanner_separated` | `domain_orderfree_separated.pddl` | 500/500 | 18/18 | unique end-of-tick state, objects in any admissible order |
 
 Classic and FA files give identical results (they differ only in action names).
 Before the rewrite: scanner_combined 69/150, scanner_separated 28/60,
@@ -132,6 +132,15 @@ conflicting updates is therefore executed in the engine's order, and all other
 pairs commute, so **every admissible order ends the tick in the engine's
 state**. `end_tick` fires when nothing is pending.
 
+`tools/sim_check/regression_cases.txt` has one case per window cell
+(`window_*`) that becomes nondeterministic when that cell is dropped from the
+window. The exception is (r, k-1), which is redundant: the left neighbour can
+only leave its cell by falling (filling the down-left cell) or by rolling left
+(which needs the down-left cell full), so this object can never roll into the
+vacated cell, and symmetrically the neighbour can never roll right into this
+object's cell. Dropping it changed nothing in testing; it stays in the window
+because it is sound and removes interleavings.
+
 - combined: one action per outcome (`physics_fall`, `physics_fall_on_agent`,
   `physics_roll_left`, `physics_roll_right`, `physics_settle`,
   `physics_settle_blocked`), each carrying the conflict window; exactly one of
@@ -155,9 +164,10 @@ i.e. it would remove the order-free style. Consequences:
   and re-checked (`tools/validate_pddl.py` now does this);
 - classic planners see the interleavings as extra search, and it grows
   exponentially with the number of independent objects: every stone/gem is
-  pending in every tick (an order-free model cannot know in advance which
-  objects will stay put), and on the 20x38 benchmark level below (123
-  stones/gems) a single tick already has more than 20,000 intermediate states
+  pending in every tick (leaving out the objects that provably stay put, those
+  resting on a non-rounded support, would still leave 63 of the 123
+  stones/gems pending on the 20x38 benchmark level below), and on that level a
+  single tick already has more than 20,000 intermediate states
   (`fuzz.py --level ... --cases 1 --walk 2` stops at its exploration cap). For
   classic planners on benchmark-sized levels use a scanner variant; FA planners
   only follow one order. The exactness argument above does not depend on the
