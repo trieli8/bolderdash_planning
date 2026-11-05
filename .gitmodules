@@ -1,15 +1,15 @@
 [submodule "planners/forced-action-ff"]
 	path = planners/forced-action-ff
-	url = https://version.aalto.fi/gitlab/elahim1/forced-action-ff
+	url = https://github.com/trieli8/forced-action-ff.git
 [submodule "planners/fast-downward"]
 	path = planners/fast-downward
-	url = https://version.aalto.fi/gitlab/elahim1/forced-action-fd
+	url = https://github.com/trieli8/forced-action-fd.git
 [submodule "stonesandgem"]
 	path = stonesandgem
-	url = https://github.com/tuero/stonesngems_cpp
+	url = https://github.com/trieli8/stonesngems_cpp.git
 [submodule "planners/pddl-plus/enhsp"]
 	path = planners/pddl-plus/enhsp
-	url = https://github.com/hstairs/enhsp
+	url = https://github.com/trieli8/enhsp.git
 [submodule "planners/powerlifted"]
 	path = planners/powerlifted
-	url = https://github.com/abcorrea/powerlifted
+	url = https://github.com/trieli8/powerlifted.git
