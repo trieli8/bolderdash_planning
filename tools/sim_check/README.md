@@ -39,8 +39,33 @@ or given with `--generator`. Exit status is 0 only if every case matched.
 All eight classic / FA files in `pddl/test_domains_target/` match on 500 random
 cases and on the regression cases; see the conformance table in
 `pddl/test_domains_target/README.md`. For the order-free (non-scanner) models
-the "several distinct successors" count is high by design: independent objects
-can be updated in any order, and every order ends the tick in the same state.
+the "several distinct successors" count is non-zero by design: independent
+objects can be updated in any order, and every order ends the tick in the same
+state.
+
+Random levels are at most 7 columns wide, so they fit in one column block of
+the scanner-combined model; to exercise block boundaries, force narrow blocks:
+
+```bash
+ROWSCAN_BLOCK_WIDTH=2 python3 tools/sim_check/fuzz.py \
+  --domain pddl/test_domains_target/domain_classic_scanner_combined.pddl --cases 500
+```
+
+## Model cost (`model_stats.py`)
+
+```bash
+python3 tools/sim_check/model_stats.py --domain pddl/test_domains_target/domain_classic_non-scanner_combined.pddl \
+  --interleavings --fd ../downward/fast-downward.py pddl/level_10_10.txt
+```
+
+Per level: ground operators and grounding time, physics steps per tick along
+fixed random walks (forced-action semantics; the walks depend only on
+`--seed` and the level, so all models see the same moves), with
+`--interleavings` the number of distinct intermediate states per tick when
+every order of physics actions is explored (what a classic planner can run
+into inside one tick), and with `--fd` a Fast Downward run (translator
+operators, expansions, times). `--json` appends one line per level for
+comparisons.
 
 ## Files
 
@@ -51,7 +76,15 @@ can be updated in any order, and every order ends the tick in the same state.
 - `pddl_exec.py` – small PDDL parser / grounder / executor (typing, negative,
   disjunctive and quantified preconditions, conditional and universal effects).
   `task_stats()` reports operator counts after relaxed-reachability pruning
-  and disjunction splitting, roughly what Fast Downward's translator produces.
+  and disjunction splitting. This is only a rough proxy: Fast Downward also
+  splits negated conditions on facts it groups into multi-valued variables
+  (the agent position, the target-gem marker), so use `model_stats.py --fd`
+  for real translator counts. Grounding takes candidates for a parameter from
+  any static literal (also from disjunctions, and from atoms with only some
+  arguments bound), and each ground action is indexed under its most
+  selective precondition atom, so grounding a 20x38 level takes a few seconds
+  and successor generation does not scan thousands of actions.
+- `model_stats.py` – per-level cost of a model (see above).
 - `regression_cases.txt` – `name;level;actions` lines.
 
 ## Scope

@@ -7,8 +7,10 @@ is shared with pddl/problem_gen.py.  Differences from the classic generator:
 * walls (and the 1-cell padding) are border-cell objects and are not part of
   the scan chain; brick walls (id 18) are rounded, every other wall-like id
   (steel 19, exits 7/8, unmodelled hazards) and the padding are flat;
-* the scan chain is gate(row) -> open cells of the row -> next gate ... -> done;
-* all rows start dirty, the scan pointer starts on the done sentinel.
+* the scan chain is gate(row) -> gate(block of BLOCK_WIDTH columns) -> open
+  cells of the block -> next block gate ... -> next row gate ... -> done (a
+  row whose open cells lie in a single block has no block gate);
+* all rows and blocks start dirty, the scan pointer starts on the done sentinel.
 
 Usage:
   python pddl/problem_gen_rowscan.py pddl/level_5_5.txt [-p name] [-d domain]
@@ -17,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -26,6 +29,14 @@ import problem_gen as base  # noqa: E402
 
 ROUNDED_WALL_IDS = {18}
 DONE = "scan_done"
+# Columns per block gate inside a row.  Block gates only pay off on wide
+# levels (about -40% scan steps on the 38-column benchmark levels, nothing on
+# 10-column ones), so by default narrower levels get one block per row, i.e.
+# no block gates.  ROWSCAN_BLOCK_WIDTH=<n> forces n-column blocks on every
+# level (ROWSCAN_BLOCK_WIDTH=2 is a stress test for tools/sim_check/fuzz.py).
+BLOCK_WIDTH = 8
+MIN_COLS_FOR_BLOCKS = 17
+FORCED_BLOCK_WIDTH = int(os.environ["ROWSCAN_BLOCK_WIDTH"]) if os.environ.get("ROWSCAN_BLOCK_WIDTH") else None
 
 
 def cell(r: int, c: int) -> str:
@@ -36,7 +47,12 @@ def row(r: int) -> str:
     return f"row_{r}"
 
 
-def generate_problem(level_text: str, problem_name: str = "level", domain_name: str = "mine-tick-gravity") -> str:
+def block(r: int, i: int) -> str:
+    return f"blk_{r}_{i}"
+
+
+def generate_problem(level_text: str, problem_name: str = "level", domain_name: str = "mine-tick-gravity",
+                     block_width: int | None = None) -> str:
     prepared = base.prepare_level(level_text)
     rows, cols = prepared.rows, prepared.cols
     ids = list(prepared.cell_ids)
@@ -54,6 +70,19 @@ def generate_problem(level_text: str, problem_name: str = "level", domain_name: 
     open_cells = [cell(r, c) for r in range(1, pr - 1) for c in range(1, pc - 1) if is_open(r, c)]
     solid_cells = [cell(r, c) for r in range(pr) for c in range(pc) if not is_open(r, c)]
     row_objs = [row(r) for r in range(pr)] + [DONE]
+    if block_width is None:
+        block_width = FORCED_BLOCK_WIDTH or (BLOCK_WIDTH if cols >= MIN_COLS_FOR_BLOCKS else cols)
+    if block_width < 2 and cols >= 2:
+        # (marks c ...) names the blocks of columns k-1 and k+1, which must
+        # include column k's block
+        raise ValueError("block width must be at least 2")
+    nblocks = -(-cols // block_width)
+
+    def blk_index(c: int) -> int:
+        """Block of padded column c (border columns belong to the nearest block)."""
+        return (min(max(c, 1), cols) - 1) // block_width
+
+    block_objs = [block(r, i) for r in range(pr) for i in range(nblocks)]
 
     init = ["(agent-alive)", f"(scan-at {DONE})", f"(scan-done {DONE})"]
     if prepared.initial_got_gem:
@@ -63,6 +92,10 @@ def generate_problem(level_text: str, problem_name: str = "level", domain_name: 
         for c in range(pc):
             name = cell(r, c)
             init.append(f"(cell-row {name} {row(r)})")
+            init.append(f"(block-of {name} {block(r, blk_index(c))})")
+            ra = max(r - 1, 0)
+            init.append(f"(marks {name} {block(r, blk_index(c - 1))} {block(r, blk_index(c + 1))} "
+                        f"{block(ra, blk_index(c - 1))} {block(ra, blk_index(c + 1))})")
             if r > 0:
                 init.append(f"(up {name} {cell(r - 1, c)})")
             if r < pr - 1:
@@ -101,24 +134,43 @@ def generate_problem(level_text: str, problem_name: str = "level", domain_name: 
         if r > 0:
             init.append(f"(row-above {row(r)} {row(r - 1)})")
 
-    # scan chain: gate -> open cells of the row -> next gate ... -> done
+    # scan chain: row gate -> block gate -> open cells of the block -> next
+    # block gate ... -> next row gate ... -> done (blocks without open cells
+    # are left out)
     gated_rows = [r for r in range(1, pr - 1) if any(is_open(r, c) for c in range(1, pc - 1))]
     if gated_rows:
         init.append(f"(first-row {row(gated_rows[0])})")
     for i, r in enumerate(gated_rows):
-        nxt = row(gated_rows[i + 1]) if i + 1 < len(gated_rows) else DONE
-        init.append(f"(next-row {row(r)} {nxt})")
+        nxt_row = row(gated_rows[i + 1]) if i + 1 < len(gated_rows) else DONE
+        init.append(f"(next-row {row(r)} {nxt_row})")
         init.append(f"(row-dirty {row(r)})")
-        cells_in_row = [c for c in range(1, pc - 1) if is_open(r, c)]
-        init.append(f"(row-start {row(r)} {cell(r, cells_in_row[0])})")
-        for j, c in enumerate(cells_in_row):
-            succ = cell(r, cells_in_row[j + 1]) if j + 1 < len(cells_in_row) else nxt
-            init.append(f"(next-pos {cell(r, c)} {succ})")
+        blocks = []
+        for b in range(nblocks):
+            cs = [c for c in range(1 + b * block_width, min(cols, (b + 1) * block_width) + 1) if is_open(r, c)]
+            if cs:
+                blocks.append((b, cs))
+        if len(blocks) == 1:  # no block gate needed: row gate -> cells -> next row gate
+            cs = blocks[0][1]
+            init.append(f"(row-start {row(r)} {cell(r, cs[0])})")
+            for k, c in enumerate(cs):
+                succ = cell(r, cs[k + 1]) if k + 1 < len(cs) else nxt_row
+                init.append(f"(next-pos {cell(r, c)} {succ})")
+            continue
+        init.append(f"(row-first-block {row(r)} {block(r, blocks[0][0])})")
+        for j, (b, cs) in enumerate(blocks):
+            nxt = block(r, blocks[j + 1][0]) if j + 1 < len(blocks) else nxt_row
+            init.append(f"(next-block {block(r, b)} {nxt})")
+            init.append(f"(block-dirty {block(r, b)})")
+            init.append(f"(block-start {block(r, b)} {cell(r, cs[0])})")
+            for k, c in enumerate(cs):
+                succ = cell(r, cs[k + 1]) if k + 1 < len(cs) else nxt
+                init.append(f"(next-pos {cell(r, c)} {succ})")
 
     objects = [
         f"    {' '.join(open_cells)} - real-cell",
         f"    {' '.join(solid_cells)} - border-cell",
         f"    {' '.join(row_objs)} - row",
+        f"    {' '.join(block_objs)} - block",
     ]
     goal = ["(got-gem)", "(agent-alive)", f"(scan-at {DONE})"]
     nl = "\n"
