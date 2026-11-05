@@ -115,8 +115,10 @@ check actions (`can_fall` / `not_fall` / `fall_on_agent`, then
 followed by one act action (`stone_fall`, `gem_fall`, `stone_roll_left`, ...,
 `stone_gem_settle`) and `advance_scan`. Exactly one physics action is
 applicable at every step of a tick, so the model is exact and fully
-deterministic; the cost is ~40 physics steps per tick on 6x7 levels (one or
-more per cell; `*_scanner_combined` skips unchanged rows and needs ~8).
+deterministic. It also matches the engine tick for tick on real 20x38
+benchmark levels (`fuzz.py --level`). The cost is at least one physics step
+per cell and tick: ~40 steps per tick on 6x7 levels, ~1250 on 20x38 levels,
+where the row-gated `*_scanner_combined` skips unchanged rows and needs ~96.
 
 ### Non-scanner (`domain_orderfree_{combined,separated}.pddl`)
 
