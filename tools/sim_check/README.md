@@ -36,6 +36,12 @@ python3 tools/sim_check/fuzz.py --domain pddl/domain_rowscan.pddl \
 The problem generator is found next to the domain (`problem_gen_<stem>.py`)
 or given with `--generator`. Exit status is 0 only if every case matched.
 
+All eight classic / FA files in `pddl/test_domains_target/` match on 500 random
+cases and on the regression cases; see the conformance table in
+`pddl/test_domains_target/README.md`. For the order-free (non-scanner) models
+the "several distinct successors" count is high by design: independent objects
+can be updated in any order, and every order ends the tick in the same state.
+
 ## Files
 
 - `engine_trace.cpp` – batch tracer linked against `stonesandgem/src`. Built

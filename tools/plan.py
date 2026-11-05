@@ -619,6 +619,9 @@ def select_problem_gen(domain: Path) -> Path:
         "domain_merged.pddl": "problem_gen.py",
         "domain_scanner_combined.pddl": "problem_gen.py",
         "domain_rowscan.pddl": "problem_gen_rowscan.py",
+        "domain_cellscan_separated.pddl": "problem_gen_cellscan.py",
+        "domain_orderfree_combined.pddl": "problem_gen_orderfree.py",
+        "domain_orderfree_separated.pddl": "problem_gen_orderfree.py",
         "domain_scanner_separated.pddl": "problem_gen_scanner_separated.py",
     }
 

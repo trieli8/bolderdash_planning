@@ -18,6 +18,8 @@ import problem_gen_plus_from_domain as plus_from_gen  # type: ignore  # noqa: E4
 import problem_gen_plus_scanner_separated as plus_scanner_gen  # type: ignore  # noqa: E402
 import problem_gen_plus_scanner_separated_events_fluents as plus_events_fluent_gen  # type: ignore  # noqa: E402
 import problem_gen_rowscan as rowscan_gen  # type: ignore  # noqa: E402
+import problem_gen_cellscan as cellscan_gen  # type: ignore  # noqa: E402
+import problem_gen_orderfree as orderfree_gen  # type: ignore  # noqa: E402
 
 
 SOURCE_TO_KIND = {
@@ -30,6 +32,9 @@ SOURCE_TO_KIND = {
     "domain_plus_scanner_separated_events.pddl": "plus_scanner",
     "domain_plus_scanner_separated_events_fluents.pddl": "plus_scanner_events_fluents",
     "domain_rowscan.pddl": "rowscan",
+    "domain_cellscan_separated.pddl": "cellscan",
+    "domain_orderfree_combined.pddl": "orderfree",
+    "domain_orderfree_separated.pddl": "orderfree",
 }
 
 SCANNER_CHAIN_PREDICATES = ("first-cell", "next-cell", "last-cell")
@@ -145,6 +150,10 @@ def _generate(kind: str, level_str: str, problem_name: str, domain_name: str, ag
         return plus_events_fluent_gen.generate_compact_problem(level_str, problem_name, domain_name)
     if kind == "rowscan":
         return rowscan_gen.generate_problem(level_str, problem_name, domain_name)
+    if kind == "cellscan":
+        return cellscan_gen.generate_problem(level_str, problem_name, domain_name)
+    if kind == "orderfree":
+        return orderfree_gen.generate_problem(level_str, problem_name, domain_name)
     raise ValueError(f"Unsupported generator kind: {kind}")
 
 

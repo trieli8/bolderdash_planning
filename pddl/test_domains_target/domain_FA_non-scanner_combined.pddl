@@ -1,11 +1,52 @@
 ; Generated test domain variant
 ; variant: domain_FA_non-scanner_combined.pddl
-; source: pddl/domain_merged.pddl
+; source: pddl/domain_orderfree_combined.pddl
+; regenerate with: python pddl/make_target_variants.py
+; Boulder Dash (stonesngems engine) - order-free physics with pending flags,
+; one combined action per outcome (stones and gems share the physics actions).
+;
+; Reproduces stonesandgem/src/stonesngems_base.cpp (RNDGameState::apply_action)
+; exactly for agent / empty / dirt / stone / gem / walls:
+;   * the agent acts first; then every stone/gem that was there at the start
+;     of the tick is updated once (an object that moved this tick, or a stone
+;     the agent just pushed, is not: engine has_updated);
+;   * a falling stone OR gem landing on the agent kills it;
+;   * only resting stones/gems and brick walls (id 18) are rounded; steel
+;     walls, exits and the level border are not, and the agent is not;
+;   * pushed stones are falling iff the cell below their destination is empty;
+;   * the target-gem marker travels with its gem.
+;
+; Order-free: there is no scan pointer.  After an agent move, start_tick marks
+; every stone/gem pending; any pending object may be updated next, provided
+; no pending object is left in its conflict window
+;
+;        k-2 k-1  k  k+1 k+2
+;   r-1   x   x   x   x   x         (?ul2 ?ul ?u ?ur ?ur2)
+;   r     x   x   c                 (?l2 ?l)
+;
+; i.e. the earlier cells (row-major) whose update can read a cell that c's
+; update writes, or write a cell that c's update reads (c reads its cell, the
+; cells below, left, down-left, right, down-right; it writes its cell and the
+; one it moves to).  Every interleaving therefore yields the engine's
+; row-major result: the end-of-tick state is unique, although several physics
+; actions (for independent objects) are usually applicable at the same time.
+;
+; Per pending object exactly one of the physics_* actions is applicable.
+; Physics does not depend on agent-alive, so a tick in which the agent dies
+; still ends in a unique state (the agent can no longer move).
+;
+; The test-domain variants
+; (pddl/test_domains_target/domain_{classic,FA}_non-scanner_combined.pddl)
+; are generated with
+;   python pddl/make_target_variants.py
+;
+; Problems: pddl/problem_gen_orderfree.py
+; Differential test against the engine: tools/sim_check/fuzz.py
 (define (domain mine-tick-gravity)
   (:requirements :strips :typing :negative-preconditions :disjunctive-preconditions :universal-preconditions :conditional-effects :action-costs)
 
   (:types
-    cell real-cell border-cell - cell
+    real-cell border-cell - cell
   )
 
   (:functions
@@ -13,508 +54,261 @@
   )
 
   (:predicates
-    ;; layout / topology
-    (up ?from ?to - cell)
-    (down ?from ?to - cell)
-    (right-of ?from ?to - cell)
+    ;; ---- static ----
+    (up ?from ?to - cell)              ; ?to is directly above ?from
+    (down ?from ?to - cell)            ; ?to is directly below ?from
+    (right-of ?from ?to - cell)        ; ?to is directly right of ?from
+    (brick ?c - cell)                  ; any wall inside the level
+    (rounded-wall ?c - cell)           ; brick wall (id 18): things roll off it
+    (flat-wall ?c - cell)              ; steel wall / exit / level border
 
-    (border-cell ?c - border-cell)
-    (real-cell ?c - real-cell)
-
-    ;; cell contents
+    ;; ---- cell contents (exactly one per cell inside the level) ----
     (agent-at ?c - cell)
     (empty ?c - cell)
     (dirt ?c - cell)
     (stone ?c - cell)
     (gem ?c - cell)
     (target-gem ?c - cell)
-    (falling ?c - cell)
-    (brick ?c - cell)
-    (was_empty ?c - real-cell)
-    (was_falling ?c - real-cell)
+    (falling ?c - cell)                ; stone/gem state; resting otherwise
 
-    ;; high-level state
+    ;; ---- tick bookkeeping ----
+    (update-required)                  ; a tick is in progress
+    (tick-start)                       ; agent has moved, objects not marked yet
+    (pushed ?c - cell)                 ; stone pushed by the agent this tick
+    (pending ?c - cell)                ; stone/gem not yet updated this tick
+
+    ;; ---- high level ----
     (agent-alive)
     (got-gem)
-    (agent-crushed)
-
-    (tick-active)
-    (updated ?c - cell)
-    (pending ?c - real-cell)
-
   )
 
-  ;; ======================================================
-  ;; AGENT MOVEMENT
-  ;; ======================================================
+  ;; ======================================================================
+  ;; AGENT MOVEMENT (between ticks; starts a tick)
+  ;; ======================================================================
 
   (:action move_noop
     :parameters ()
-    :precondition (and (agent-alive)
-      (not (tick-active))
-    )
+    :precondition (and (agent-alive) (not (update-required)))
     :effect (and
-      (tick-active)
-      (increase (total-cost) 1)
-      (forall (?cc - real-cell) (when (or (stone ?cc) (gem ?cc)) (and (pending ?cc))))
-    )
+      (update-required) (tick-start)
+      (increase (total-cost) 1))
   )
 
   (:action move_empty
     :parameters (?from ?to - real-cell)
-    :precondition (and (agent-alive)
+    :precondition (and
+      (agent-alive) (not (update-required))
       (agent-at ?from)
-      (or (up ?from ?to)
-        (down ?from ?to)
-        (right-of ?to ?from)
-        (right-of ?from ?to))
-      (empty ?to)
-      (not (tick-active))
-    )
+      (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
+      (empty ?to))
     :effect (and
-      (not (agent-at ?from))
-      (agent-at ?to)
-
-      (empty ?from)
-      (not (empty ?to))
-
-      (tick-active)
-      (increase (total-cost) 1)
-      (forall (?cc - real-cell) (when (or (stone ?cc) (gem ?cc)) (and (pending ?cc))))
-
-    )
+      (not (agent-at ?from)) (empty ?from)
+      (not (empty ?to)) (agent-at ?to)
+      (update-required) (tick-start)
+      (increase (total-cost) 1))
   )
-  ;; Move into dirt (mines it to empty)
+
+  ;; Move into dirt (mines it).
   (:action move_into_dirt
     :parameters (?from ?to - real-cell)
-    :precondition (and (agent-alive)
+    :precondition (and
+      (agent-alive) (not (update-required))
       (agent-at ?from)
-      (or (up ?from ?to)
-        (down ?from ?to)
-        (right-of ?to ?from)
-        (right-of ?from ?to))
-      (dirt ?to)
-      (not (tick-active))
-    )
+      (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
+      (dirt ?to))
     :effect (and
-      (not (agent-at ?from))
-      (agent-at ?to)
-
-      (not (dirt ?to))
-
-      (empty ?from)
-      (not (empty ?to))
-
-      (tick-active)
-      (forall (?cc - real-cell) (when (or (stone ?cc) (gem ?cc)) (and (pending ?cc))))
-      (increase (total-cost) 1)
-    )
+      (not (agent-at ?from)) (empty ?from)
+      (not (dirt ?to)) (agent-at ?to)
+      (update-required) (tick-start)
+      (increase (total-cost) 1))
   )
 
-  ;; Move into a normal gem.
+  ;; Collect an ordinary gem (resting or falling).
   (:action move_into_gem
     :parameters (?from ?to - real-cell)
-    :precondition (and (agent-alive)
+    :precondition (and
+      (agent-alive) (not (update-required))
       (agent-at ?from)
-      (or (up ?from ?to)
-        (down ?from ?to)
-        (right-of ?to ?from)
-        (right-of ?from ?to))
-      (gem ?to)
-      (not (target-gem ?to))
-      (not (tick-active))
-    )
+      (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
+      (gem ?to) (not (target-gem ?to)))
     :effect (and
-      (not (agent-at ?from))
-      (agent-at ?to)
-
-      (empty ?from)
-      (not (empty ?to))
-
-      (not (gem ?to))
-      (not (falling ?to))
-
-      (tick-active)
-      (forall (?cc - real-cell) (when (or (stone ?cc) (gem ?cc)) (and (pending ?cc))))
-      (increase (total-cost) 1)
-    )
+      (not (agent-at ?from)) (empty ?from)
+      (not (gem ?to)) (not (falling ?to)) (agent-at ?to)
+      (update-required) (tick-start)
+      (increase (total-cost) 1))
   )
 
-  ;; Move into the distinguished target gem.
+  ;; Collect the distinguished target gem.
   (:action move_into_target_gem
     :parameters (?from ?to - real-cell)
-    :precondition (and (agent-alive)
-      (agent-at ?from)
-      (or (up ?from ?to)
-        (down ?from ?to)
-        (right-of ?to ?from)
-        (right-of ?from ?to))
-      (gem ?to)
-      (target-gem ?to)
-      (not (tick-active))
-    )
-    :effect (and
-      (not (agent-at ?from))
-      (agent-at ?to)
-
-      (empty ?from)
-      (not (empty ?to))
-
-      (not (gem ?to))
-      (not (target-gem ?to))
-      (not (falling ?to))
-
-      (got-gem)
-      (tick-active)
-      (forall (?cc - real-cell) (when (or (stone ?cc) (gem ?cc)) (and (pending ?cc))))
-      (increase (total-cost) 1)
-    )
-  )
-
-  (:action move_push_rock
-    :parameters (?from ?to ?stone_dest - real-cell)
-    :precondition (and (agent-alive)
-      (agent-at ?from)
-      (or
-        ; (and (up ?from ?to) (up ?to ?stone_dest))
-        (and (right-of ?to ?from) (right-of ?stone_dest ?to))
-        (and (right-of ?from ?to) (right-of ?to ?stone_dest))
-        ; (and (down ?from ?to) (down ?to ?stone_dest))
-      )
-      (stone ?to)
-      (empty ?stone_dest)
-      (not (tick-active))
-    )
-    :effect (and
-      (not (agent-at ?from))
-      (agent-at ?to)
-
-      (not (stone ?to))
-      (not (falling ?to))
-      (empty ?to)
-      ; (was_empty ?to) TODO THINK ABOUT THIS
-
-      (not (empty ?stone_dest))
-      (stone ?stone_dest)
-      (not (falling ?stone_dest))
-
-      (updated ?to)
-      (tick-active)
-      (forall (?cc - real-cell) (when (or (stone ?cc) (gem ?cc)) (and (pending ?cc))))
-      (increase (total-cost) 1)
-
-    )
-  )
-
-  ;; ======================================================
-  ;; PHYSICS: ONE-TICK CELL UPDATE (PARALLEL)
-  ;; ======================================================
-
-  (:action __FORCED__physics_fall
-    :parameters (?c ?down - real-cell)
     :precondition (and
-      (tick-active)
-
-      (down ?c ?down)
-      (or (stone ?c) (gem ?c))
-      (empty ?down)
-
-      (not (updated ?c))
-      (not (updated ?down))
-
-    )
+      (agent-alive) (not (update-required))
+      (agent-at ?from)
+      (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
+      (gem ?to) (target-gem ?to))
     :effect (and
-      (when (stone ?c) (not (stone ?c)))
-      (when (gem ?c) (not (gem ?c)))
-      (not (falling ?c))
-      (empty ?c)
-      (when (falling ?c) (was_falling ?c))
+      (not (agent-at ?from)) (empty ?from)
+      (not (gem ?to)) (not (target-gem ?to)) (not (falling ?to)) (agent-at ?to)
+      (got-gem)
+      (update-required) (tick-start)
+      (increase (total-cost) 1))
+  )
 
+  ;; Horizontal push of a resting stone into an empty cell.  The pushed stone
+  ;; is not updated again this tick (start_tick does not mark it pending) and
+  ;; is falling iff the cell below its destination is empty.
+  (:action move_push_rock
+    :parameters (?from ?to ?stone_dest - real-cell ?below - cell)
+    :precondition (and
+      (agent-alive) (not (update-required))
+      (agent-at ?from)
+      (or (and (right-of ?from ?to) (right-of ?to ?stone_dest))
+          (and (right-of ?to ?from) (right-of ?stone_dest ?to)))
+      (stone ?to) (not (falling ?to))
+      (empty ?stone_dest)
+      (down ?stone_dest ?below))
+    :effect (and
+      (not (agent-at ?from)) (empty ?from)
+      (not (stone ?to)) (agent-at ?to)
+      (not (empty ?stone_dest)) (stone ?stone_dest) (pushed ?stone_dest)
+      (when (empty ?below) (falling ?stone_dest))
+      (update-required) (tick-start)
+      (increase (total-cost) 1))
+  )
+
+  ;; ======================================================================
+  ;; PHYSICS: one action per pending stone/gem.  Every action carries the
+  ;; conflict window ?l ?l2 ?u ?ul ?ul2 ?ur ?ur2 (see the header), which must
+  ;; hold no pending object.
+  ;; ======================================================================
+
+  ;; Cell below is empty: move down, falling.
+  (:action __FORCED__physics_fall
+    :parameters (?c - real-cell ?down ?l ?l2 ?u ?ul ?ul2 ?ur ?ur2 - cell)
+    :precondition (and
+      (pending ?c)
+      (right-of ?l ?c) (right-of ?l2 ?l)
+      (up ?c ?u) (right-of ?ul ?u) (right-of ?ul2 ?ul) (right-of ?u ?ur) (right-of ?ur ?ur2)
+      (not (pending ?l)) (not (pending ?l2))
+      (not (pending ?u)) (not (pending ?ul)) (not (pending ?ul2)) (not (pending ?ur)) (not (pending ?ur2))
+      (down ?c ?down) (empty ?down))
+    :effect (and
+      (not (pending ?c))
+      (not (stone ?c)) (not (gem ?c)) (not (target-gem ?c)) (not (falling ?c)) (empty ?c)
       (when (stone ?c) (stone ?down))
       (when (gem ?c) (gem ?down))
-      (falling ?down)
-      (not (empty ?down))
-      (was_empty ?down)
-
-      (updated ?down)
-      (updated ?c)
-      (not (pending ?c))
-
-    )
+      (when (target-gem ?c) (target-gem ?down))
+      (not (empty ?down)) (falling ?down))
   )
 
-  (:action __FORCED__physics_on_dirt
-    :parameters (?c ?down - real-cell)
+  ;; Falling stone or gem lands on the agent: explosion, agent dies.
+  (:action __FORCED__physics_fall_on_agent
+    :parameters (?c - real-cell ?down ?l ?l2 ?u ?ul ?ul2 ?ur ?ur2 - cell)
     :precondition (and
-      (tick-active)
-      (down ?c ?down)
-      (or (stone ?c) (gem ?c))
-      (or (dirt ?down))
-
-      (not (updated ?c))
-    )
-    :effect (and
-      (updated ?c)
-      (not (falling ?c))
-      (when (falling ?c) (was_falling ?c))
-      (not (pending ?c))
-    )
+      (pending ?c)
+      (right-of ?l ?c) (right-of ?l2 ?l)
+      (up ?c ?u) (right-of ?ul ?u) (right-of ?ul2 ?ul) (right-of ?u ?ur) (right-of ?ur ?ur2)
+      (not (pending ?l)) (not (pending ?l2))
+      (not (pending ?u)) (not (pending ?ul)) (not (pending ?ul2)) (not (pending ?ur)) (not (pending ?ur2))
+      (falling ?c) (down ?c ?down) (agent-at ?down))
+    :effect (and (not (pending ?c)) (not (agent-alive)))
   )
 
-  (:action __FORCED__physics_on_bottom
-    :parameters (?c - real-cell ?down - border-cell)
-    :precondition (and
-      (tick-active)
-      (down ?c ?down)
-
-      (or (stone ?c) (gem ?c))
-      (not (updated ?c))
-    )
-    :effect (and
-      (updated ?c)
-      (not (falling ?c))
-      (when (falling ?c) (was_falling ?c))
-      (not (pending ?c))
-    )
-  )
-
-  ; ------------------------------------------------------
-  ;; ROLLING
-  ; ------------------------------------------------------
-
+  ;; Rounded support (resting stone/gem or brick wall), left and down-left
+  ;; empty: roll left (engine: CanRollLeft has priority).
   (:action __FORCED__physics_roll_left
-    :parameters (?c - real-cell ?left ?down_left ?down ?up_left ?danger_cell - cell)
-
+    :parameters (?c - real-cell ?down ?down_left ?l ?l2 ?u ?ul ?ul2 ?ur ?ur2 - cell)
     :precondition (and
-      (tick-active)
-      (right-of ?danger_cell ?left)
-      (right-of ?left ?c)
-
-      ;; below
-      (down ?left ?down_left)
-      (down ?c ?down)
-
-      ;; above
-      (up ?left ?up_left)
-
-      (or (stone ?c) (gem ?c))
-      (not (updated ?c))
-
-      (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
-      (not (falling ?down))
-      (not (was_falling ?down))
-
-      (or (and (not (stone ?up_left)) (not (gem ?up_left))) (updated ?up_left))
-
-      (empty ?left)
-      (not (updated ?left))
-
-      (or (empty ?down_left) (was_empty ?down_left))
-
-      (or (and (not (stone ?danger_cell)) (not (gem ?danger_cell))) (updated ?danger_cell))
-    )
-
+      (pending ?c)
+      (right-of ?l ?c) (right-of ?l2 ?l)
+      (up ?c ?u) (right-of ?ul ?u) (right-of ?ul2 ?ul) (right-of ?u ?ur) (right-of ?ur ?ur2)
+      (not (pending ?l)) (not (pending ?l2))
+      (not (pending ?u)) (not (pending ?ul)) (not (pending ?ul2)) (not (pending ?ur)) (not (pending ?ur2))
+      (down ?c ?down) (down ?l ?down_left)
+      (or (rounded-wall ?down) (and (or (stone ?down) (gem ?down)) (not (falling ?down))))
+      (empty ?l) (empty ?down_left))
     :effect (and
-      (when (stone ?c) (not (stone ?c)))
-      (when (gem ?c) (not (gem ?c)))
-      (not (falling ?c))
-      (empty ?c)
-      (when (falling ?c) (was_falling ?c))
-
-      (when (stone ?c) (stone ?left))
-      (when (gem ?c) (gem ?left))
-      (falling ?left)
-      (not (empty ?left))
-      (was_empty ?left)
-
-      (updated ?c)
-      (updated ?left)
       (not (pending ?c))
-
-    )
+      (not (stone ?c)) (not (gem ?c)) (not (target-gem ?c)) (not (falling ?c)) (empty ?c)
+      (when (stone ?c) (stone ?l))
+      (when (gem ?c) (gem ?l))
+      (when (target-gem ?c) (target-gem ?l))
+      (not (empty ?l)) (falling ?l))
   )
 
+  ;; Rounded support, roll left blocked, right and down-right empty: roll right.
   (:action __FORCED__physics_roll_right
-    :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right ?left_danger - cell)
-
+    :parameters (?c - real-cell ?down ?down_left ?right ?down_right ?l ?l2 ?u ?ul ?ul2 ?ur ?ur2 - cell)
     :precondition (and
-      (tick-active)
-      (right-of ?left ?c)
-      (right-of ?c ?right)
-      (right-of ?left_danger ?left)
-
-      ;; below
-      (down ?left ?down_left)
-      (down ?c ?down)
-      (down ?right ?down_right)
-
-      ;; above
-      (up ?left ?up_left)
-      (up ?c ?up)
-      (up ?right ?up_right)
-
-      (or (stone ?c) (gem ?c))
-      (not (updated ?c))
-
-      (or (stone ?down) (gem ?down) (brick ?down) (updated ?down))
-      (not (falling ?down))
-      (not (was_falling ?down))
-
-      (or (and (not (stone ?up_right)) (not (gem ?up_right))) (updated ?up_right))
-
-      (empty ?right)
-      (not (updated ?right))
-
-      (or (empty ?down_right) (was_empty ?down_right))
-
-      ;; no roll left
-      (or
-        (not (empty ?left))
-        (updated ?left)
-        (and (not (empty ?down_left)) (not (was_empty ?down_left)))
-        (and (stone ?up_left) (not (updated ?up_left)))
-        (and (gem ?up_left) (not (updated ?up_left)))
-      )
-
-      (or (and (not (stone ?left_danger)) (not (gem ?left_danger))) (updated ?left_danger))
-
-    )
-
+      (pending ?c)
+      (right-of ?l ?c) (right-of ?l2 ?l)
+      (up ?c ?u) (right-of ?ul ?u) (right-of ?ul2 ?ul) (right-of ?u ?ur) (right-of ?ur ?ur2)
+      (not (pending ?l)) (not (pending ?l2))
+      (not (pending ?u)) (not (pending ?ul)) (not (pending ?ul2)) (not (pending ?ur)) (not (pending ?ur2))
+      (down ?c ?down) (down ?l ?down_left) (right-of ?c ?right) (down ?right ?down_right)
+      (or (rounded-wall ?down) (and (or (stone ?down) (gem ?down)) (not (falling ?down))))
+      (or (not (empty ?l)) (not (empty ?down_left)))
+      (empty ?right) (empty ?down_right))
     :effect (and
-      (when (stone ?c) (not (stone ?c)))
-      (when (gem ?c) (not (gem ?c)))
-      (not (falling ?c))
-      (empty ?c)
-      (when (falling ?c) (was_falling ?c))
-
+      (not (pending ?c))
+      (not (stone ?c)) (not (gem ?c)) (not (target-gem ?c)) (not (falling ?c)) (empty ?c)
       (when (stone ?c) (stone ?right))
       (when (gem ?c) (gem ?right))
-      (falling ?right)
-      (not (empty ?right))
-      (was_empty ?right)
-
-      (updated ?c)
-      (updated ?right)
-      (not (pending ?c))
-    )
+      (when (target-gem ?c) (target-gem ?right))
+      (not (empty ?right)) (falling ?right))
   )
 
-  (:action __FORCED__physics_noop
-    :parameters (?c - real-cell ?left ?right ?down_left ?down ?down_right ?up_left ?up ?up_right ?left_danger - cell)
+  ;; Support is not rounded: dirt, a flat wall / the border, a falling
+  ;; stone/gem, or the agent under a resting object (a falling one crushes
+  ;; it).  The object stays; a falling one comes to rest.
+  (:action __FORCED__physics_settle
+    :parameters (?c - real-cell ?down ?l ?l2 ?u ?ul ?ul2 ?ur ?ur2 - cell)
     :precondition (and
-      (tick-active)
-      (or (stone ?c) (gem ?c))
-
-      (right-of ?left ?c)
-      (right-of ?c ?right)
-      (right-of ?left_danger ?left)
-
-      ;; below
-      (down ?left ?down_left)
+      (pending ?c)
+      (right-of ?l ?c) (right-of ?l2 ?l)
+      (up ?c ?u) (right-of ?ul ?u) (right-of ?ul2 ?ul) (right-of ?u ?ur) (right-of ?ur ?ur2)
+      (not (pending ?l)) (not (pending ?l2))
+      (not (pending ?u)) (not (pending ?ul)) (not (pending ?ul2)) (not (pending ?ur)) (not (pending ?ur2))
       (down ?c ?down)
-      (down ?right ?down_right)
-
-      ;; above
-      (up ?left ?up_left)
-      (up ?c ?up)
-      (up ?right ?up_right)
-
-      ;; no fall
-      (or (not (empty ?down)) (updated ?down))
-
-      ;; no roll left
-      (or
-        (and (not (stone ?down)) (not (gem ?down)) (not (brick ?down)) (not (updated ?down)))
-        (falling ?down)
-        (was_falling ?down)
-        (not (empty ?left))
-        (updated ?left)
-        (and (not (empty ?down_left)) (not (was_empty ?down_left)))
-        (and (stone ?up_left) (not (updated ?up_left)))
-        (and (gem ?up_left) (not (updated ?up_left)))
-        (and (stone ?left_danger) (not (updated ?left_danger)))
-        (and (gem ?left_danger) (not (updated ?left_danger))))
-      ;; no roll right
-      (or
-        (and (not (stone ?down)) (not (gem ?down)) (not (brick ?down)) (not (updated ?down)))
-        (falling ?down)
-        (was_falling ?down)
-        (not (empty ?right))
-        (updated ?right)
-        (and (not (empty ?down_right)) (not (was_empty ?down_right)))
-        (and (stone ?up_right) (not (updated ?up_right)))
-        (and (gem ?up_right) (not (updated ?up_right))))
-
-      (or (and (not (stone ?left_danger)) (not (gem ?left_danger))) (updated ?left_danger))
-      
-      (not (updated ?c))
-
-    )
-
-    :effect (and
-      (updated ?c)
-      (not (falling ?c))
-      (when (falling ?c) (was_falling ?c))
-      (not (pending ?c))
-    )
+      (or (dirt ?down) (flat-wall ?down)
+          (and (or (stone ?down) (gem ?down)) (falling ?down))
+          (and (agent-at ?down) (not (falling ?c)))))
+    :effect (and (not (pending ?c)) (not (falling ?c)))
   )
 
-  (:action __FORCED__physics_on_falling_noop
-    :parameters (?c - real-cell ?down - cell)
+  ;; Rounded support, but both rolls are blocked.
+  (:action __FORCED__physics_settle_blocked
+    :parameters (?c - real-cell ?down ?down_left ?right ?down_right ?l ?l2 ?u ?ul ?ul2 ?ur ?ur2 - cell)
     :precondition (and
-      (tick-active)
-      (down ?c ?down)
-
-      (or (stone ?c) (gem ?c))
-      
-      (falling ?down)
-      (was_falling ?down)
-
-      (not (updated ?c))
-    )
-
-    :effect (and
-      (updated ?c)
-      (not (falling ?c))
-      (when (falling ?c) (was_falling ?c))
-      (not (pending ?c))
-    )
+      (pending ?c)
+      (right-of ?l ?c) (right-of ?l2 ?l)
+      (up ?c ?u) (right-of ?ul ?u) (right-of ?ul2 ?ul) (right-of ?u ?ur) (right-of ?ur ?ur2)
+      (not (pending ?l)) (not (pending ?l2))
+      (not (pending ?u)) (not (pending ?ul)) (not (pending ?ul2)) (not (pending ?ur)) (not (pending ?ur2))
+      (down ?c ?down) (down ?l ?down_left) (right-of ?c ?right) (down ?right ?down_right)
+      (or (rounded-wall ?down) (and (or (stone ?down) (gem ?down)) (not (falling ?down))))
+      (or (not (empty ?l)) (not (empty ?down_left)))
+      (or (not (empty ?right)) (not (empty ?down_right))))
+    :effect (and (not (pending ?c)) (not (falling ?c)))
   )
 
-
-
-  (:action __FORCED__physics_agent_noop
-    :parameters (?c - real-cell)
-    :precondition (and
-      (tick-active)
-      (agent-at ?c)
-    )
+  ;; Mark every stone/gem pending, except a stone the agent just pushed.
+  (:action __FORCED__start_tick
+    :parameters ()
+    :precondition (tick-start)
     :effect (and
-      (updated ?c)
-      (not (falling ?c))
-      (when (falling ?c) (was_falling ?c))
-      (not (pending ?c))
-    )
+      (not (tick-start))
+      (forall (?cc - real-cell)
+        (and (when (and (or (stone ?cc) (gem ?cc)) (not (pushed ?cc))) (pending ?cc))
+             (not (pushed ?cc)))))
   )
 
-  ;; -------- End-of-tick: at last cell, updated, flip parity --------
-
+  ;; Every stone/gem has been updated: the tick is over.
   (:action __FORCED__end_tick
     :parameters ()
     :precondition (and
-      (tick-active)
-      (forall
-        (?c - real-cell)
-        (and
-          (not (pending ?c))
-        ))
-    )
-    :effect (and
-      ;; remove scan pointer: tick finished
-      (forall
-        (?c - real-cell)
-        (and (not (updated ?c)) (not (pending ?c)) (not (was_empty ?c)) (not (was_falling ?c))))
-      (not (tick-active))
-    )
+      (update-required) (not (tick-start))
+      (forall (?c - real-cell) (not (pending ?c))))
+    :effect (not (update-required))
   )
 )

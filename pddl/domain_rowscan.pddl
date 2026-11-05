@@ -25,7 +25,7 @@
 ; is in progress, and no move_* action is.  The forced-action variant
 ; (pddl/test_domains_target/domain_FA_scanner_combined.pddl) only prefixes the
 ; physics actions with __FORCED__; regenerate both variants with
-;   python pddl/make_rowscan_variants.py
+;   python pddl/make_target_variants.py
 ;
 ; Problems: pddl/problem_gen_rowscan.py
 ; Differential test against the engine: tools/sim_check/fuzz.py

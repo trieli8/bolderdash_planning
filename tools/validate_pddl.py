@@ -476,6 +476,11 @@ def run_forced_actions(
         else:
             ops_to_apply = applicable_ops
         for op in sorted(ops_to_apply, key=lambda o: " ".join(o.name_tokens)):
+            # Several forced ops can be applicable at once (order-free physics);
+            # applying one may disable another, so re-check before applying.
+            apply_axioms(state, axioms)
+            if not applicable(op, state):
+                continue
             apply(op, state)
             executed.append(_action_from_op(op))
             steps += 1
