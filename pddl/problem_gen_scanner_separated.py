@@ -112,6 +112,7 @@ def generate_pddl_problem(
     Generate a full PDDL problem text from a level string.
     """
     prepared = base.prepare_level(level_str)
+    base.require_target_gem_goal(prepared, "problem_gen_scanner_separated.py")
     rows = prepared.rows
     cols = prepared.cols
     max_time = prepared.max_time

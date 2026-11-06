@@ -53,6 +53,16 @@ can be updated in any order, and every order ends the tick in the same state.
   `task_stats()` reports operator counts after relaxed-reachability pruning
   and disjunction splitting, roughly what Fast Downward's translator produces.
 - `regression_cases.txt` – `name;level;actions` lines.
+- `plan_check.py` – greedy planner over the grounded model (forced-action
+  semantics) whose plans are replayed in the engine. With `--collect-gems N`
+  (or a `; collect-gems: N` line in the level file) the goal is any N gems and
+  a plan is valid if the engine counts at least N collected gems with the
+  agent alive:
+
+  ```bash
+  python3 tools/sim_check/plan_check.py --domain pddl/test_domains_target/domain_FA_scanner_combined.pddl \
+      --collect-gems 3 LEVEL.txt
+  ```
 
 ## Scope
 

@@ -127,7 +127,19 @@ def _rename_predicate_facts(problem_pddl: str, src_predicate: str, dst_predicate
     return pattern.sub(rf"\1{dst_predicate}\2", problem_pddl)
 
 
-def _generate(kind: str, level_str: str, problem_name: str, domain_name: str, agent_name: str) -> str:
+GEM_COUNTER_KINDS = {"rowscan", "cellscan", "orderfree"}
+
+
+def _generate(
+    kind: str,
+    level_str: str,
+    problem_name: str,
+    domain_name: str,
+    agent_name: str,
+    collect_gems: str | None = None,
+) -> str:
+    if collect_gems is not None and kind not in GEM_COUNTER_KINDS:
+        raise ValueError(f"--collect-gems is not supported for generator kind '{kind}' (no gem counter)")
     if kind == "classic":
         return classic_gen.generate_pddl_problem(
             level_str,
@@ -149,11 +161,11 @@ def _generate(kind: str, level_str: str, problem_name: str, domain_name: str, ag
     if kind == "plus_scanner_events_fluents":
         return plus_events_fluent_gen.generate_compact_problem(level_str, problem_name, domain_name)
     if kind == "rowscan":
-        return rowscan_gen.generate_problem(level_str, problem_name, domain_name)
+        return rowscan_gen.generate_problem(level_str, problem_name, domain_name, collect_gems)
     if kind == "cellscan":
-        return cellscan_gen.generate_problem(level_str, problem_name, domain_name)
+        return cellscan_gen.generate_problem(level_str, problem_name, domain_name, collect_gems)
     if kind == "orderfree":
-        return orderfree_gen.generate_problem(level_str, problem_name, domain_name)
+        return orderfree_gen.generate_problem(level_str, problem_name, domain_name, collect_gems)
     raise ValueError(f"Unsupported generator kind: {kind}")
 
 
@@ -168,6 +180,13 @@ def main_for_domain_file(domain_filename: str) -> int:
     ap.add_argument("-p", "--problem-name", default="", help="Problem name (default: derived from level input)")
     ap.add_argument("-d", "--domain-name", default="", help="Override domain name in the generated problem")
     ap.add_argument("-a", "--agent-name", default="player", help="Agent object name for classic generators")
+    ap.add_argument(
+        "--collect-gems",
+        default=None,
+        metavar="N|level",
+        help="Goal: collect any N gems instead of the target gem ('level': the level's required_gems "
+        "field).  Scanner / non-scanner classic and FA domains only.",
+    )
     args = ap.parse_args()
 
     domain_path = _resolve_domain_path(domain_filename)
@@ -190,7 +209,7 @@ def main_for_domain_file(domain_filename: str) -> int:
             )
 
         domain_name = args.domain_name or _extract_domain_name(domain_path)
-        pddl = _generate(kind, level_str, args.problem_name, domain_name, args.agent_name)
+        pddl = _generate(kind, level_str, args.problem_name, domain_name, args.agent_name, args.collect_gems)
 
         # Classic generators currently emit scanner-chain init facts unconditionally.
         # Remove them when the domain variant does not declare these predicates.

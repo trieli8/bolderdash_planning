@@ -10,8 +10,11 @@ is shared with pddl/problem_gen.py.  Differences from that generator:
   ends on the `scan_end` sentinel;
 * the initial state is between ticks (scan-complete).
 
+Goal: the target gem, or with --collect-gems N (or a `; collect-gems: N` line
+in the level file) any N gems; `level` uses the level's required_gems field.
+
 Usage:
-  python pddl/problem_gen_cellscan.py pddl/level_5_5.txt [-p name] [-d domain]
+  python pddl/problem_gen_cellscan.py pddl/level_5_5.txt [-p name] [-d domain] [--collect-gems N|level]
 """
 
 from __future__ import annotations
@@ -49,8 +52,14 @@ def content_facts(name: str, cid: int, target: bool) -> list[str]:
     return facts
 
 
-def generate_problem(level_text: str, problem_name: str = "level", domain_name: str = "mine-tick-gravity") -> str:
-    prepared = base.prepare_level(level_text)
+def generate_problem(
+    level_text: str,
+    problem_name: str = "level",
+    domain_name: str = "mine-tick-gravity",
+    collect_gems: int | str | None = None,
+) -> str:
+    prepared = base.prepare_level(level_text, base.LevelMetadata(collect_gems=collect_gems))
+    counts, count_init, count_goal = base.gem_counter(prepared.collect_gems)
     rows, cols = prepared.rows, prepared.cols
     ids = list(prepared.cell_ids)
     target = None if prepared.initial_got_gem else prepared.target_gem_pos
@@ -62,6 +71,7 @@ def generate_problem(level_text: str, problem_name: str = "level", domain_name: 
     init = ["(agent-alive)", "(scan-complete)"]
     if prepared.initial_got_gem:
         init.append("(got-gem)")
+    init.extend(count_init)
     for r in range(pr):
         for c in range(pc):
             name = cell(r, c)
@@ -88,12 +98,13 @@ def generate_problem(level_text: str, problem_name: str = "level", domain_name: 
   (:objects
     {' '.join(interior)} - real-cell
     {' '.join(border + [SCAN_END])} - border-cell
+    {' '.join(counts)} - {base.GEM_COUNT_TYPE}
   )
   (:init
     (= (total-cost) 0)
 {nl.join('    ' + a for a in init)}
   )
-  (:goal (and (got-gem) (agent-alive) (scan-complete)))
+  (:goal (and {count_goal or '(got-gem)'} (agent-alive) (scan-complete)))
   (:metric minimize (total-cost))
 )
 """
@@ -105,6 +116,13 @@ def main() -> int:
     ap.add_argument("-p", "--problem-name", default="", help="Problem name (default: level file stem)")
     ap.add_argument("-d", "--domain-name", default="mine-tick-gravity")
     ap.add_argument("-a", "--agent-name", default="player", help="ignored (compatibility)")
+    ap.add_argument(
+        "--collect-gems",
+        default=None,
+        metavar="N|level",
+        help="Goal: collect any N gems instead of the target gem ('level': the level's "
+        "required_gems field).  Overrides a `; collect-gems:` line in the level file.",
+    )
     args = ap.parse_args()
     if args.level_input.endswith(".txt"):
         text = Path(args.level_input).read_text(encoding="utf-8")
@@ -113,7 +131,7 @@ def main() -> int:
         text = args.level_input
         name = args.problem_name or "level"
     try:
-        sys.stdout.write(generate_problem(text, name, args.domain_name))
+        sys.stdout.write(generate_problem(text, name, args.domain_name, args.collect_gems))
     except Exception as exc:  # noqa: BLE001
         sys.stderr.write(f"Error: {exc}\n")
         return 1

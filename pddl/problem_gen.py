@@ -48,6 +48,8 @@ BRICK_IDS   = {
 class LevelMetadata:
     start_gem_ordinal: int | None = None
     target_gem_ordinal: int | None = None
+    # Gem-count goal: an int, or "level" for the level's required_gems field.
+    collect_gems: int | str | None = None
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,9 @@ class PreparedLevel:
     agent_pos: tuple[int, int]
     target_gem_pos: tuple[int, int] | None
     initial_got_gem: bool
+    # Gem-count goal: collect this many gems (any of them) instead of the
+    # target gem.  None means the target-gem goal.
+    collect_gems: int | None = None
 
 def classify_cell_id(cell_id: int):
     """
@@ -117,8 +122,30 @@ def parse_level_string(level_str: str):
     return rows, cols, max_time, required_gems, cell_ids
 
 
+def parse_collect_gems(value: int | str | None) -> int | str | None:
+    """Parse a gem-count goal: a positive int, or "level" (use the level's
+    required_gems field).  None / "" means no gem-count goal."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        n = value
+    else:
+        text = value.strip().lower()
+        if text == "":
+            return None
+        if text == "level":
+            return "level"
+        try:
+            n = int(text)
+        except ValueError:
+            raise ValueError(f"collect-gems must be a positive integer or 'level', got {value!r}") from None
+    if n < 1:
+        raise ValueError(f"collect-gems must be at least 1, got {n}")
+    return n
+
+
 def parse_level_text(level_text: str) -> tuple[str, LevelMetadata]:
-    metadata: dict[str, int] = {}
+    metadata: dict[str, int | str | None] = {}
     level_lines: list[str] = []
 
     for raw_line in level_text.splitlines():
@@ -132,6 +159,8 @@ def parse_level_text(level_text: str) -> tuple[str, LevelMetadata]:
                 norm_key = key.strip().lower().replace("_", "-")
                 if norm_key in {"start-gem-ordinal", "target-gem-ordinal"}:
                     metadata[norm_key] = int(value.strip())
+                elif norm_key == "collect-gems":
+                    metadata[norm_key] = parse_collect_gems(value)
             continue
         level_lines.append(raw_line.strip())
 
@@ -141,6 +170,7 @@ def parse_level_text(level_text: str) -> tuple[str, LevelMetadata]:
     return "\n".join(level_lines), LevelMetadata(
         start_gem_ordinal=metadata.get("start-gem-ordinal"),
         target_gem_ordinal=metadata.get("target-gem-ordinal"),
+        collect_gems=metadata.get("collect-gems"),
     )
 
 
@@ -167,6 +197,11 @@ def prepare_level(level_text: str, level_metadata: LevelMetadata | None = None) 
                 level_metadata.target_gem_ordinal
                 if level_metadata.target_gem_ordinal is not None
                 else inline_metadata.target_gem_ordinal
+            ),
+            collect_gems=(
+                level_metadata.collect_gems
+                if level_metadata.collect_gems is not None
+                else inline_metadata.collect_gems
             ),
         )
 
@@ -235,6 +270,24 @@ def prepare_level(level_text: str, level_metadata: LevelMetadata | None = None) 
                 current_gem_positions.append((idx // cols, idx % cols))
         target_gem_pos = select_target_gem_position(agent_pos, current_gem_positions)
 
+    # Gem-count goal: any n gems instead of the target gem.  The target gem
+    # (marker or ordinal) is then an ordinary gem.
+    collect_gems = parse_collect_gems(level_metadata.collect_gems)
+    if collect_gems == "level":
+        if required_gems < 1:
+            raise ValueError(
+                f"collect-gems=level, but the level's required_gems field is {required_gems}."
+            )
+        collect_gems = required_gems
+    if collect_gems is not None:
+        gems_on_map = sum(1 for cell_id in cell_ids if classify_cell_id(cell_id) == "gem")
+        if collect_gems > gems_on_map:
+            raise ValueError(
+                f"collect-gems={collect_gems}, but the level has only {gems_on_map} gems."
+            )
+        target_gem_pos = None
+        initial_got_gem = False
+
     return PreparedLevel(
         rows=rows,
         cols=cols,
@@ -244,7 +297,40 @@ def prepare_level(level_text: str, level_metadata: LevelMetadata | None = None) 
         agent_pos=agent_pos,
         target_gem_pos=target_gem_pos,
         initial_got_gem=initial_got_gem,
+        collect_gems=collect_gems,
     )
+
+
+GEM_COUNT_TYPE = "gem-count"
+
+
+def gem_counter(collect_gems: int | None) -> tuple[list[str], list[str], str | None]:
+    """Gem counter of the scanner / order-free domains (domain_rowscan,
+    domain_cellscan_separated, domain_orderfree_*).
+
+    Returns (count objects, init facts, goal fact).  The counter runs
+    gems_0 -> gems_1 -> ... -> gems_n and stays at gems_n (gem-count-next
+    gems_n gems_n), so the agent can still collect gems after the n-th one.
+    Without a gem-count goal there is a single count object that loops to
+    itself: the counter is inert and every gem move grounds exactly once.
+    """
+    n = collect_gems or 0
+    names = [f"gems_{i}" for i in range(n + 1)]
+    init = [f"(gems-collected {names[0]})"]
+    init += [f"(gem-count-next {a} {b})" for a, b in zip(names, names[1:])]
+    init.append(f"(gem-count-next {names[-1]} {names[-1]})")
+    goal = f"(gems-collected {names[-1]})" if collect_gems else None
+    return names, init, goal
+
+
+def require_target_gem_goal(prepared: PreparedLevel, generator: str) -> None:
+    """For generators whose domains have no gem counter."""
+    if prepared.collect_gems is not None:
+        raise ValueError(
+            f"{generator} does not support collect-gems (its domain has no gem counter); "
+            "use domain_rowscan / domain_cellscan_separated / domain_orderfree_* "
+            "(pddl/test_domains_target/domain_{classic,FA}_*)."
+        )
 
 def cell_name(r: int, c: int) -> str:
     """Name for a cell object in PDDL."""
@@ -287,6 +373,7 @@ def generate_pddl_problem(
     Generate a full PDDL problem text from a level string.
     """
     prepared = prepare_level(level_str)
+    require_target_gem_goal(prepared, "problem_gen.py")
     rows = prepared.rows
     cols = prepared.cols
     max_time = prepared.max_time

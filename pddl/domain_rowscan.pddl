@@ -18,7 +18,7 @@
 ; changed since the row was last scanned (in which case every object in it is
 ; provably stable).  updated flags are cleared by the scan itself, so a tick
 ; ends without any forall reset.  Preconditions are positive except on the
-; binary flags (updated, row-dirty, target-gem).
+; binary flags (updated, row-dirty).
 ;
 ; Agent actions are the move_* actions; every other action is physics and is
 ; deterministic: in any state exactly one of them is applicable while a tick
@@ -26,6 +26,12 @@
 ; (pddl/test_domains_target/domain_FA_scanner_combined.pddl) only prefixes the
 ; physics actions with __FORCED__; regenerate both variants with
 ;   python pddl/make_target_variants.py
+;
+; Goals: the target gem, (got-gem), or any n gems, (gems-collected gems_n).
+; Every gem move steps the gem counter gems_0 -> gems_1 -> ... -> gems_n, which
+; then stays at gems_n; a target-gem problem has the single object gems_0 that
+; loops to itself, so the counter costs nothing there (problem generators:
+; --collect-gems N, or a `; collect-gems: N` line in the level file).
 ;
 ; Problems: pddl/problem_gen_rowscan.py
 ; Differential test against the engine: tools/sim_check/fuzz.py
@@ -36,6 +42,7 @@
     pos - object
     cell row - pos
     real-cell border-cell - cell
+    gem-count
   )
 
   (:functions
@@ -80,6 +87,10 @@
     ;; ---- high level ----
     (agent-alive)
     (got-gem)
+
+    ;; ---- gem counter (problem objects gems_0 .. gems_n) ----
+    (gems-collected ?n - gem-count)    ; gems collected so far (exactly one true)
+    (gem-count-next ?n ?m - gem-count) ; static successor; gems_n -> gems_n (saturates)
   )
 
   ;; ======================================================================
@@ -126,37 +137,45 @@
       (increase (total-cost) 1))
   )
 
-  ;; Collect an ordinary gem (resting or falling).
+  ;; Collect a gem (resting or falling).  A target gem also matches (as in
+  ;; move_into_target_gem) rather than adding (not (target-gem ?to)): Fast
+  ;; Downward merges target-gem into one variable with a value per cell and
+  ;; would ground one copy of this action per value (~1.2M operators on a 20x38 level).
   (:action move_into_gem
-    :parameters (?from ?to - real-cell ?d ?r0 ?rf ?rfa - row)
+    :parameters (?from ?to - real-cell ?d ?r0 ?rf ?rfa - row ?n ?m - gem-count)
     :precondition (and
       (agent-alive) (scan-at ?d) (scan-done ?d) (first-row ?r0)
       (agent-at ?from)
       (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
-      (obj ?to) (gem ?to) (not (target-gem ?to))
+      (obj ?to) (gem ?to)
+      (gems-collected ?n) (gem-count-next ?n ?m)
       (cell-row ?from ?rf) (row-above ?rf ?rfa))
     :effect (and
       (not (agent-at ?from)) (empty ?from) (not (full ?from))
       (not (obj ?to)) (not (gem ?to)) (not (falling ?to)) (not (resting ?to)) (agent-at ?to)
       (row-dirty ?rf) (row-dirty ?rfa)
       (not (scan-at ?d)) (scan-at ?r0)
+      (when (target-gem ?to) (and (not (target-gem ?to)) (got-gem)))
+      (not (gems-collected ?n)) (gems-collected ?m)
       (increase (total-cost) 1))
   )
 
   ;; Collect the distinguished target gem.
   (:action move_into_target_gem
-    :parameters (?from ?to - real-cell ?d ?r0 ?rf ?rfa - row)
+    :parameters (?from ?to - real-cell ?d ?r0 ?rf ?rfa - row ?n ?m - gem-count)
     :precondition (and
       (agent-alive) (scan-at ?d) (scan-done ?d) (first-row ?r0)
       (agent-at ?from)
       (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
       (obj ?to) (gem ?to) (target-gem ?to)
+      (gems-collected ?n) (gem-count-next ?n ?m)
       (cell-row ?from ?rf) (row-above ?rf ?rfa))
     :effect (and
       (not (agent-at ?from)) (empty ?from) (not (full ?from))
       (not (obj ?to)) (not (gem ?to)) (not (target-gem ?to)) (not (falling ?to)) (not (resting ?to))
       (agent-at ?to)
       (got-gem)
+      (not (gems-collected ?n)) (gems-collected ?m)
       (row-dirty ?rf) (row-dirty ?rfa)
       (not (scan-at ?d)) (scan-at ?r0)
       (increase (total-cost) 1))

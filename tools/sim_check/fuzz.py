@@ -180,8 +180,9 @@ def random_walk(rng: random.Random, length: int) -> str:
 # --------------------------------------------------------------------------
 
 
-def load_generator(domain: Path, explicit: Optional[Path] = None):
-    """Return a callable level_text -> problem_text for the domain."""
+def load_generator(domain: Path, explicit: Optional[Path] = None, extra_args: Sequence[str] = ()):
+    """Return a callable level_text -> problem_text for the domain.  extra_args
+    are passed to the generator (e.g. ["--collect-gems", "3"])."""
     stem = domain.stem
     candidates = [explicit] if explicit else [
         domain.parent / f"problem_gen_{stem}.py",
@@ -193,7 +194,8 @@ def load_generator(domain: Path, explicit: Optional[Path] = None):
         raise FileNotFoundError(f"No problem generator next to {domain} (tried {[c.name for c in candidates]})")
 
     def generate(level_text: str, name: str = "fuzz") -> str:
-        proc = subprocess.run([sys.executable, str(gen), level_text, "-p", name], capture_output=True, text=True)
+        proc = subprocess.run([sys.executable, str(gen), level_text, "-p", name, *extra_args],
+                              capture_output=True, text=True)
         if proc.returncode != 0:
             raise RuntimeError(f"generator failed: {proc.stderr.strip()}")
         return proc.stdout

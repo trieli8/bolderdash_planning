@@ -9,8 +9,11 @@ the full conflict window used by the order-free physics actions (two cells
 left in its row, k-2..k+2 in the row above); the void cells never hold
 anything.  The initial state is between ticks (no update-required).
 
+Goal: the target gem, or with --collect-gems N (or a `; collect-gems: N` line
+in the level file) any N gems; `level` uses the level's required_gems field.
+
 Usage:
-  python pddl/problem_gen_orderfree.py pddl/level_5_5.txt [-p name] [-d domain]
+  python pddl/problem_gen_orderfree.py pddl/level_5_5.txt [-p name] [-d domain] [--collect-gems N|level]
 """
 
 from __future__ import annotations
@@ -27,8 +30,14 @@ from problem_gen_cellscan import cell, content_facts  # noqa: E402
 LEFT_VOID, RIGHT_VOID = "left_void", "right_void"
 
 
-def generate_problem(level_text: str, problem_name: str = "level", domain_name: str = "mine-tick-gravity") -> str:
-    prepared = base.prepare_level(level_text)
+def generate_problem(
+    level_text: str,
+    problem_name: str = "level",
+    domain_name: str = "mine-tick-gravity",
+    collect_gems: int | str | None = None,
+) -> str:
+    prepared = base.prepare_level(level_text, base.LevelMetadata(collect_gems=collect_gems))
+    counts, count_init, count_goal = base.gem_counter(prepared.collect_gems)
     rows, cols = prepared.rows, prepared.cols
     ids = list(prepared.cell_ids)
     target = None if prepared.initial_got_gem else prepared.target_gem_pos
@@ -40,6 +49,7 @@ def generate_problem(level_text: str, problem_name: str = "level", domain_name: 
     init = ["(agent-alive)"]
     if prepared.initial_got_gem:
         init.append("(got-gem)")
+    init.extend(count_init)
     for r in range(pr):
         init.append(f"(right-of {LEFT_VOID} {cell(r, 0)})")
         init.append(f"(right-of {cell(r, pc - 1)} {RIGHT_VOID})")
@@ -63,12 +73,13 @@ def generate_problem(level_text: str, problem_name: str = "level", domain_name: 
   (:objects
     {' '.join(interior)} - real-cell
     {' '.join(border + [LEFT_VOID, RIGHT_VOID])} - border-cell
+    {' '.join(counts)} - {base.GEM_COUNT_TYPE}
   )
   (:init
     (= (total-cost) 0)
 {nl.join('    ' + a for a in init)}
   )
-  (:goal (and (got-gem) (agent-alive) (not (update-required))))
+  (:goal (and {count_goal or '(got-gem)'} (agent-alive) (not (update-required))))
   (:metric minimize (total-cost))
 )
 """
@@ -80,6 +91,13 @@ def main() -> int:
     ap.add_argument("-p", "--problem-name", default="", help="Problem name (default: level file stem)")
     ap.add_argument("-d", "--domain-name", default="mine-tick-gravity")
     ap.add_argument("-a", "--agent-name", default="player", help="ignored (compatibility)")
+    ap.add_argument(
+        "--collect-gems",
+        default=None,
+        metavar="N|level",
+        help="Goal: collect any N gems instead of the target gem ('level': the level's "
+        "required_gems field).  Overrides a `; collect-gems:` line in the level file.",
+    )
     args = ap.parse_args()
     if args.level_input.endswith(".txt"):
         text = Path(args.level_input).read_text(encoding="utf-8")
@@ -88,7 +106,7 @@ def main() -> int:
         text = args.level_input
         name = args.problem_name or "level"
     try:
-        sys.stdout.write(generate_problem(text, name, args.domain_name))
+        sys.stdout.write(generate_problem(text, name, args.domain_name, args.collect_gems))
     except Exception as exc:  # noqa: BLE001
         sys.stderr.write(f"Error: {exc}\n")
         return 1

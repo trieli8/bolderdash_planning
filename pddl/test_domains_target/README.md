@@ -28,6 +28,11 @@ This folder contains the generated matrix requested from:
   The problem generator is picked through the `; source:` header
   (`problem_gen_common.py`, `tools/plan.py`, `tools/benchmarking/bench_config_matrix.py`).
 
+  Goals: the target gem (`got-gem`), or any n gems with `--collect-gems N` / a
+  `; collect-gems: N` line in the level file (`(gems-collected gems_n)`, a
+  saturating counter stepped by the gem moves). See "Gem-count goal" in the
+  top-level `README.md`.
+
 - `domain_plus_*_actions`
   - `scanner_combined_actions` -> `pddl/domain_scanner_combined.pddl`
   - `scanner_separated_actions` -> `pddl/domain_scanner_separated.pddl`
@@ -53,7 +58,9 @@ Observed status: all 16 solved.
 The eight classic / FA files have since been rewritten (see "Engine
 conformance" below); they were checked with `tools/sim_check` (differential
 fuzzing, and plans found on `pddl/level_5_5.txt` and a 20x38 benchmark level
-replayed in the engine), not re-run through Fast Downward.
+replayed in the engine). All eight also solve `pddl/level_5_5.txt` with
+`tools/plan.py` (`fd`), and every plan replays correctly in the engine; see
+"Problem size" below for the 20x38 level.
 
 ## Variant Problem Generators (No-Write)
 
@@ -182,15 +189,52 @@ depend on `agent-alive`), so such a tick still ends in a unique state; no
 
 ### Problem size (20x38 benchmark level `test_problems/h1/bd_level_01_start_gem_001_target_gem_005.txt`)
 
-Fast Downward-style operator counts from `tools/sim_check/pddl_exec.task_stats`
-(after relaxed reachability and disjunction splitting):
+Operator counts from `tools/sim_check/pddl_exec.task_stats` (after relaxed
+reachability and disjunction splitting) and from the Fast Downward translator:
 
-| variant | operators |
-|---|---|
-| `*_scanner_combined` | ~16.6k |
-| `*_scanner_separated` | ~32.5k |
-| `*_non-scanner_combined` | ~7.6k |
-| `*_non-scanner_separated` | ~8.7k |
+| variant | `task_stats` | FD translator |
+|---|---|---|
+| `*_scanner_combined` | ~16.6k | 19,847 |
+| `*_scanner_separated` | ~32.5k | 36,823 |
+| `*_non-scanner_combined` | ~7.6k | 21,992 |
+| `*_non-scanner_separated` | ~8.7k | 29,909 |
+
+`task_stats` does not model one translator step: FD merges mutually exclusive
+facts into multi-valued variables (`agent-at` becomes one variable over every
+cell the agent can reach, `target-gem` one over every cell the target gem can
+reach), and a negated precondition on such a fact is compiled into one operator
+copy per other value. Keep `(not (agent-at ...))` / `(not (target-gem ...))` out
+of preconditions. Two did slip in: `move_into_gem` had `(not (target-gem ?to))`
+in every variant (~1.16M operators; collecting the target gem is now a
+conditional effect), and `not_fall` in the separated variants had
+`(not (agent-at ?down))` (~1.07M / ~549k operators; now spelled out as the
+other contents a full cell can have).
 
 `tools/sim_check/plan_check.py` finds a 30-move plan on that level with each
-of them, and the plan is valid when replayed in the engine.
+of them, and the plan is valid when replayed in the engine. Fast Downward
+through `tools/plan.py`, 300 s limit, FA variants with
+`--planner-args "--search 'lazy_greedy([ff()], preferred=[ff()])'"`, classic
+variants with the default search:
+
+| variant | FA | classic |
+|---|---|---|
+| `*_scanner_combined` | 15.0 s, 41 expansions | 24.7 s, 5,551 expansions |
+| `*_scanner_separated` | 24.3 s, 47 expansions | timeout |
+| `*_non-scanner_combined` | 15.7 s, 43 expansions | timeout |
+| `*_non-scanner_separated` | 17.0 s, 47 expansions | timeout |
+
+Every plan has 30 agent moves and is valid when replayed in the engine.
+Translation takes 9-13 s of each run. These times are with a cheaper per-state
+GUI dump in `planners/fast-downward/src/search/utils/state_dump.cc`; with the
+regex-based dump, `domain_FA_scanner_combined` needs 245 s (93% of it in the
+dump) and the separated variants time out. `tools/plan.py`'s default search for
+`*scanner_separated*` (which also matches `*non-scanner_separated*`) is eager
+`astar(ff())`, which does not apply `__forced__` actions, so the FA separated
+variants need the `--planner-args` above.
+
+Gem-count goal on the same level (`--collect-gems`, `domain_FA_scanner_combined`,
+same search): the target-gem problem still has 19,847 translator operators (its
+counter is a single inert object); any 3 gems: 25,791 operators, 52 s, 43
+moves; all 12 gems of the level's `required_gems` field (`--collect-gems level`):
+48,660 operators, 216 s, 113 moves. Both plans are valid in the engine (12/12
+gems collected, agent alive).

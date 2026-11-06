@@ -29,6 +29,7 @@ def _interior_cell_name(r: int, c: int) -> str:
 
 def generate_compact_problem(level_str: str, problem_name: str, domain_name: str) -> str:
     prepared = base.prepare_level(level_str)
+    base.require_target_gem_goal(prepared, "problem_gen_plus_from_domain.py")
     rows = prepared.rows
     cols = prepared.cols
     cell_ids = list(prepared.cell_ids)

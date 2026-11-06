@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import plan as plan_cli
+
 
 SEARCH_CHOICES = [
     "astar",
@@ -187,20 +189,29 @@ def write_direction_plan(path: Path, actions: List[Tuple[str, List[str]]]) -> No
 
 
 def select_problem_gen(domain: Path) -> Path:
-    domain_name = domain.name.lower()
-    root = repo_root()
-    if "scanner_separated" in domain_name or "scaner_separated" in domain_name:
-        return root / "pddl" / "problem_gen_scanner_separated.py"
-    return root / "pddl" / "problem_gen.py"
+    # Delegate to tools/plan.py's variant-aware resolver instead of maintaining
+    # a second, drifted copy: this used to always fall back to the legacy
+    # pddl/problem_gen.py regardless of which classic_/FA_/plus_ domain variant
+    # was passed in, producing problems with predicates (e.g. first-cell) that
+    # the actual domain never declares.
+    return plan_cli.select_problem_gen(domain)
 
 
-def generate_problem_from_level(level_txt: Path, problem_name: str, domain: Path, explicit_gen: Optional[Path]) -> Tuple[Path, tempfile.TemporaryDirectory]:
+def generate_problem_from_level(
+    level_txt: Path,
+    problem_name: str,
+    domain: Path,
+    explicit_gen: Optional[Path],
+    collect_gems: Optional[str] = None,
+) -> Tuple[Path, tempfile.TemporaryDirectory]:
     gen_py = explicit_gen.resolve() if explicit_gen else select_problem_gen(domain)
     if not gen_py.exists():
         raise FileNotFoundError(f"Missing problem generator at {gen_py}")
     tmpdir = tempfile.TemporaryDirectory(prefix="gen_lifted_problem_")
     out_path = Path(tmpdir.name) / f"{problem_name}.pddl"
     cmd = [sys.executable, str(gen_py), str(level_txt), "-p", problem_name]
+    if collect_gems is not None:
+        cmd += ["--collect-gems", str(collect_gems)]
     rc, out, err = run_cmd_capture(cmd, cwd=Path(tmpdir.name))
     if rc != 0:
         tmpdir.cleanup()
@@ -405,6 +416,12 @@ def main() -> int:
     ap.add_argument("--play-plan", type=Path, help="Play an existing plan file and exit")
     ap.add_argument("--play-level", type=Path, help="Optional level file for plan_player")
     ap.add_argument("--problem-gen", type=Path, default=None, help="Override problem generator script when --problem is a .txt level")
+    ap.add_argument(
+        "--collect-gems",
+        default=None,
+        metavar="N|level",
+        help="Level .txt problems only: goal is to collect any N gems instead of the target gem ('level': the level's required_gems field).  Scanner / non-scanner classic and FA domains (pddl/test_domains_target/domain_{classic,FA}_*).  Plans go to plans/<level>_collect<N>/.",
+    )
     args = ap.parse_args()
 
     if args.play_plan:
@@ -434,13 +451,17 @@ def main() -> int:
 
     problem = input_problem
     temp_problem_dir: Optional[tempfile.TemporaryDirectory] = None
+    if args.collect_gems is not None and problem.suffix.lower() != ".txt":
+        print("Error: --collect-gems needs a level .txt as --problem.", file=sys.stderr)
+        return 2
     if problem.suffix.lower() == ".txt":
         try:
             problem, temp_problem_dir = generate_problem_from_level(
                 level_txt=problem,
-                problem_name=problem.stem,
+                problem_name=problem.stem + (f"_collect{args.collect_gems}" if args.collect_gems is not None else ""),
                 domain=domain,
                 explicit_gen=args.problem_gen,
+                collect_gems=args.collect_gems,
             )
             print(f"[INFO] Generated PDDL problem from {input_problem} -> {problem}")
         except Exception as exc:

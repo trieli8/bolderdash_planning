@@ -489,14 +489,19 @@ def solve_with_fd(
 
         extra_args = shlex.split(planner_args or "")
         if optimal:
-            # Optimal: lazy A* (lazy_wastar w=1) with the blind heuristic.
+            # Optimal: lazy A* (lazy_wastar w=1) with the hmax heuristic.
             # Must use LazySearch, not astar()/EagerSearch: only LazySearch
             # intercepts __FORCED__ physics actions and auto-applies them at
-            # zero cost (see lazy_search.cc). w=1 + blind (admissible) with
+            # zero cost (see lazy_search.cc). w=1 + hmax (admissible) with
             # lazy_wastar's default reopen_closed=true keeps this optimal.
+            # hmax beat blind on every domain variant in growth benchmarking
+            # (matched or solved where blind timed out); lmcut/merge_and_shrink
+            # were tried too but both error out ("does not support axioms!")
+            # on this domain's ADL-compiled axioms, so hmax is the strongest
+            # admissible heuristic confirmed compatible so far.
             default_search_args = [
                 "--search",
-                "lazy_wastar([blind(verbosity=debug)], w=1)",
+                "lazy_wastar([hmax()], w=1)",
             ]
             tag = "fd-opt"
         else:
@@ -643,7 +648,7 @@ def select_problem_gen(domain: Path) -> Path:
 
 
 def generate_problem_from_level(
-    level_txt: Path, problem_name: str, domain: Path
+    level_txt: Path, problem_name: str, domain: Path, collect_gems: Optional[str] = None
 ) -> Tuple[Path, tempfile.TemporaryDirectory]:
     """
     Use the appropriate problem_gen script to generate a PDDL problem
@@ -656,6 +661,8 @@ def generate_problem_from_level(
     tmpdir = tempfile.TemporaryDirectory(prefix="gen_problem_")
     out_path = Path(tmpdir.name) / f"{problem_name}.pddl"
     cmd = [sys.executable, str(gen_py), str(level_txt), "-p", problem_name]
+    if collect_gems is not None:
+        cmd += ["--collect-gems", str(collect_gems)]
     rc, out, err = run_cmd_capture(cmd)
     if rc != 0:
         tmpdir.cleanup()
@@ -682,6 +689,12 @@ def main() -> int:
     ap.add_argument("--view", action="store_true", help="After planning, open the first solved plan in plan_player.")
     ap.add_argument("--pddl-failure-trace-out", type=Path, help="Write pddl_failure states (JSONL) extracted from FD stdout.")
     ap.add_argument("--view-pddl-failure", action="store_true", help="Open trace_viewer to show all pddl_failure states (FD only).")
+    ap.add_argument(
+        "--collect-gems",
+        default=None,
+        metavar="N|level",
+        help="Level .txt problems only: goal is to collect any N gems instead of the target gem ('level': the level's required_gems field).  Scanner / non-scanner classic and FA domains (pddl/test_domains_target/domain_{classic,FA}_*).  Plans go to plans/<level>_collect<N>/.",
+    )
     args = ap.parse_args()
 
     if args.play_plan:
@@ -710,10 +723,15 @@ def main() -> int:
 
     # If a level .txt is passed as the "problem", generate a PDDL problem via problem_gen.
     temp_problem_dir: Optional[tempfile.TemporaryDirectory] = None
+    if args.collect_gems is not None and problem.suffix.lower() != ".txt":
+        print("Error: --collect-gems needs a level .txt as --problem.", file=sys.stderr)
+        return 2
     if problem.suffix.lower() == ".txt":
         problem_name = problem.stem
+        if args.collect_gems is not None:
+            problem_name += f"_collect{args.collect_gems}"
         try:
-            problem, temp_problem_dir = generate_problem_from_level(problem, problem_name, domain)
+            problem, temp_problem_dir = generate_problem_from_level(problem, problem_name, domain, args.collect_gems)
             print(f"[INFO] Generated PDDL problem from {args.problem} -> {problem}")
         except Exception as e:
             print(f"[ERR] Failed to generate PDDL problem from {problem}: {e}", file=sys.stderr)

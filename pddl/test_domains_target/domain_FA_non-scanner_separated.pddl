@@ -43,6 +43,12 @@
 ; are generated with
 ;   python pddl/make_target_variants.py
 ;
+; Goals: the target gem, (got-gem), or any n gems, (gems-collected gems_n).
+; Every gem move steps the gem counter gems_0 -> gems_1 -> ... -> gems_n, which
+; then stays at gems_n; a target-gem problem has the single object gems_0 that
+; loops to itself, so the counter costs nothing there (problem generators:
+; --collect-gems N, or a `; collect-gems: N` line in the level file).
+;
 ; Problems: pddl/problem_gen_orderfree.py
 ; Differential test against the engine: tools/sim_check/fuzz.py
 (define (domain mine-tick-gravity)
@@ -50,6 +56,7 @@
 
   (:types
     real-cell border-cell - cell
+    gem-count
   )
 
   (:functions
@@ -94,6 +101,10 @@
     ;; ---- high level ----
     (agent-alive)
     (got-gem)
+
+    ;; ---- gem counter (problem objects gems_0 .. gems_n) ----
+    (gems-collected ?n - gem-count)    ; gems collected so far (exactly one true)
+    (gem-count-next ?n ?m - gem-count) ; static successor; gems_n -> gems_n (saturates)
   )
 
   ;; ======================================================================
@@ -137,33 +148,41 @@
       (increase (total-cost) 1))
   )
 
-  ;; Collect an ordinary gem (resting or falling).
+  ;; Collect a gem (resting or falling).  A target gem also matches (as in
+  ;; move_into_target_gem) rather than adding (not (target-gem ?to)): Fast
+  ;; Downward merges target-gem into one variable with a value per cell and
+  ;; would ground one copy of this action per value (~1.2M operators on a 20x38 level).
   (:action move_into_gem
-    :parameters (?from ?to - real-cell)
+    :parameters (?from ?to - real-cell ?n ?m - gem-count)
     :precondition (and
       (agent-alive) (not (update-required))
       (agent-at ?from)
       (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
-      (gem ?to) (not (target-gem ?to)))
+      (gem ?to)
+      (gems-collected ?n) (gem-count-next ?n ?m))
     :effect (and
       (not (agent-at ?from)) (empty ?from)
       (not (gem ?to)) (not (falling ?to)) (agent-at ?to)
       (update-required) (tick-start)
+      (when (target-gem ?to) (and (not (target-gem ?to)) (got-gem)))
+      (not (gems-collected ?n)) (gems-collected ?m)
       (increase (total-cost) 1))
   )
 
   ;; Collect the distinguished target gem.
   (:action move_into_target_gem
-    :parameters (?from ?to - real-cell)
+    :parameters (?from ?to - real-cell ?n ?m - gem-count)
     :precondition (and
       (agent-alive) (not (update-required))
       (agent-at ?from)
       (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
-      (gem ?to) (target-gem ?to))
+      (gem ?to) (target-gem ?to)
+      (gems-collected ?n) (gem-count-next ?n ?m))
     :effect (and
       (not (agent-at ?from)) (empty ?from)
       (not (gem ?to)) (not (target-gem ?to)) (not (falling ?to)) (agent-at ?to)
       (got-gem)
+      (not (gems-collected ?n)) (gems-collected ?m)
       (update-required) (tick-start)
       (increase (total-cost) 1))
   )
@@ -244,12 +263,17 @@
       (not (active ?c)) (not (busy)) (not (pending ?c)))
   )
 
+  ;; Nothing falls: the cell below is full, and not the agent if this object is
+  ;; falling.  "Not the agent" is spelled out as the other contents a full cell
+  ;; can have: Fast Downward merges agent-at into one variable with a value per
+  ;; cell and would compile (not (agent-at ?down)) into one copy per value.
   (:action __FORCED__not_fall
     :parameters (?c - real-cell ?down - cell)
     :precondition (and
       (active ?c) (check_fall)
       (down ?c ?down) (not (empty ?down))
-      (or (not (falling ?c)) (not (agent-at ?down))))
+      (or (not (falling ?c))
+          (dirt ?down) (stone ?down) (gem ?down) (rounded-wall ?down) (flat-wall ?down)))
     :effect (and (not (check_fall)) (check_roll_left))
   )
 
