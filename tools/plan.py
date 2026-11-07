@@ -468,6 +468,18 @@ def _fd_args_override_default_search(extra_args: Sequence[str]) -> bool:
     return any(tok in override_flags for tok in extra_args)
 
 
+_FORCED_ACTION_RE = re.compile(r"\(:action\s+__forced__", re.IGNORECASE)
+
+
+def _domain_has_forced_actions(domain: Path) -> bool:
+    """True for forced-action (FA) domains, whose physics actions are named __FORCED__*."""
+    try:
+        text = domain.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return _FORCED_ACTION_RE.search(text) is not None
+
+
 def solve_with_fd(
     domain: Path,
     problem: Path,
@@ -488,34 +500,43 @@ def solve_with_fd(
         td_path = Path(td)
 
         extra_args = shlex.split(planner_args or "")
+        # Defaults below are the fastest settings from the solver sweep in
+        # tools/benchmarking/results/solver-sweep_20261107 (8 target domains,
+        # 6x6-16x16 generated levels and 20x38 test_problems/h1 levels).
         if optimal:
-            # Optimal: lazy A* (lazy_wastar w=1) with the hmax heuristic.
-            # Must use LazySearch, not astar()/EagerSearch: only LazySearch
-            # intercepts __FORCED__ physics actions and auto-applies them at
-            # zero cost (see lazy_search.cc). w=1 + hmax (admissible) with
-            # lazy_wastar's default reopen_closed=true keeps this optimal.
-            # hmax beat blind on every domain variant in growth benchmarking
-            # (matched or solved where blind timed out); lmcut/merge_and_shrink
-            # were tried too but both error out ("does not support axioms!")
-            # on this domain's ADL-compiled axioms, so hmax is the strongest
-            # admissible heuristic confirmed compatible so far.
-            default_search_args = [
-                "--search",
-                "lazy_wastar([hmax()], w=1)",
-            ]
+            # A* with hmax.  hmax is the strongest admissible heuristic these
+            # domains allow: conditional effects rule out lmcut/PDBs/CEGAR, the
+            # non-scanner models compile to axioms (no merge-and-shrink or
+            # landmark cost partitioning), and merge-and-shrink needs 10-40 s
+            # to build anyway.  On FA domains forced_actions=true makes eager
+            # search apply __forced__ physics chains at cost 0 and evaluate only
+            # their fixpoints (as LazySearch does), so A* stays optimal.  It
+            # solved 7/8 20x38 levels on both combined FA models, against 4/8
+            # for lazy_wastar([hmax()], w=1), and tied it on the separated ones.
+            if _domain_has_forced_actions(domain):
+                search = "astar(hmax(), forced_actions=true)"
+            else:
+                search = "astar(hmax())"
+            default_search_args = ["--search", search]
             tag = "fd-opt"
         else:
-            # Satisficing: default stops after first plan; optionally run an anytime loop.
+            # Satisficing: lazy GBFS with one FF instance shared by evaluation and
+            # preferred operators was fastest or tied on every model (eager GBFS,
+            # astar(ff()), cea, cg and lama-first were all slower).  LazySearch
+            # applies __forced__ actions on FA domains.  On the non-scanner
+            # separated model, FF with unit costs (so physics steps count) was the
+            # only fast setting that solved every 20x38 level.
             domain_name = domain.name.lower()
-            if "scanner_separated" in domain_name or "scaner_separated" in domain_name:
-                # Greedy FF gets stuck on scanner-separated (many forced actions + delete effects).
-                search = "astar(ff())"
-                tag = "fd"
-            elif keep_searching:
-                search = "iterated([lazy_greedy([ff()], preferred=[ff()])], repeat_last=true)"
+            if "non-scanner_separated" in domain_name or "orderfree_separated" in domain_name:
+                h = "ff(transform=adapt_costs(one))"
+            else:
+                h = "ff()"
+            greedy = "lazy_greedy([h], preferred=[h])"
+            if keep_searching:
+                search = f"let(h, {h}, iterated([{greedy}], repeat_last=true))"
                 tag = "fd-any"
             else:
-                search = "lazy_greedy([ff()], preferred=[ff()])"
+                search = f"let(h, {h}, {greedy})"
                 tag = "fd"
             default_search_args = ["--search", search]
 
@@ -681,7 +702,7 @@ def main() -> int:
         help="Extra args passed through to FF/FD planner invocation.",
     )
     ap.add_argument("--timeout", type=int, default=None)
-    ap.add_argument("--optimal", action="store_true", help="FD only: attempt optimal planning (alias seq-opt-lmcut)")
+    ap.add_argument("--optimal", action="store_true", help="FD only: optimal planning with A* + hmax (forced_actions=true on FA domains)")
     ap.add_argument("--fd-keep-searching", action="store_true", help="FD only: keep searching for better solutions until timeout using iterated greedy search")
     ap.add_argument("--stream", action="store_true", help="Stream planner output live to terminal")
     ap.add_argument("--play-plan", type=Path, help="Play an existing plan file with the plan_player GUI and exit.")
