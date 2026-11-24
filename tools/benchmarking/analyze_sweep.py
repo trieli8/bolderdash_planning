@@ -11,8 +11,9 @@ a solved row wins over an unsolved one and the first solved row is kept.
 Status meanings (from Fast Downward exit codes):
   solved, timeout, memout, unsolvable / incomplete (search space exhausted:
   the task has no plan), unsupported, error(rc).
-Problems that every complete search exhausted are reported as unsolvable
-and left out of coverage.
+A problem that some search exhausted under any model is reported as having no
+plan and left out of coverage for every model (the models are meant to be
+equivalent; a model that solves such a problem is flagged).
 """
 from __future__ import annotations
 
@@ -114,6 +115,8 @@ def main() -> int:
     unsolv = {(r["model"], r["problem"]) for r in rows if r["status"] in EXHAUSTED}
     solved_any = {(r["model"], r["problem"]) for r in rows if r["status"] == "solved"}
     bad = unsolv & solved_any
+    nop = {p for m, p in unsolv}
+    cross = sorted({(m, p) for m, p in solved_any if p in nop} - bad)
     out = print
     out(f"# Fast Downward settings sweep\n")
     out(f"Variant **{want}** (translator options; +fa = forced-action fork). Other variants in the data: "
@@ -126,9 +129,12 @@ def main() -> int:
     if bad:
         out("\n**WARNING: solved and exhausted on the same task (unsound search?):** "
             + ", ".join(f"{SHORT[m]} {short_problem(p)}" for m, p in sorted(bad)))
-    uns = sorted({p for m, p in unsolv})
+    if cross:
+        out("\n**WARNING: solved by one model but exhausted by another (models disagree):** "
+            + ", ".join(f"{SHORT[m]} {short_problem(p)}" for m, p in cross))
+    uns = sorted(nop)
     if uns:
-        out("\nProblems with no plan (search space exhausted), excluded from coverage: "
+        out("\nProblems with no plan (search space exhausted; [models that proved it]), excluded from coverage for all models: "
             + ", ".join(f"{short_problem(p)} [{','.join(SHORT[m] for m in models if (m, p) in unsolv)}]" for p in uns))
 
     # ---- coverage ----
@@ -142,7 +148,7 @@ def main() -> int:
         for m in models:
             cells = []
             for c in CFGS:
-                rs = [idx.get((m, p, c)) for p in probs[s] if (m, p) not in unsolv]
+                rs = [idx.get((m, p, c)) for p in probs[s] if p not in nop]
                 rs = [r for r in rs if r]
                 if not rs:
                     cells.append("")
