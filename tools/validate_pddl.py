@@ -931,8 +931,10 @@ def prepare_problem_and_level(
             raise FileNotFoundError(f"Problem generator not found at {gen_py}")
         temp_problem_dir = tempfile.TemporaryDirectory(prefix="gen_problem_")
         problem = Path(temp_problem_dir.name) / f"{problem_name}.pddl"
-        cmd = [sys.executable, str(gen_py), str(problem_input), "-p", problem_name]
-        rc = subprocess.run(cmd, text=True, capture_output=True)
+        cmd = [sys.executable, str(gen_py.resolve()), str(problem_input.resolve()), "-p", problem_name]
+        # Run inside the temp dir: older generators also write
+        # <problem_name>.pddl to their working directory.
+        rc = subprocess.run(cmd, text=True, capture_output=True, cwd=temp_problem_dir.name)
         if rc.returncode != 0:
             raise RuntimeError(f"{gen_py.name} failed (rc={rc.returncode}): {rc.stderr or rc.stdout}")
         problem.write_text(rc.stdout, encoding="utf-8")

@@ -187,14 +187,11 @@ def write_direction_plan(path: Path, actions: List[Tuple[str, List[str]]]) -> No
 
 
 def select_problem_gen(domain: Path) -> Path:
-    domain_name = domain.name.lower()
-    root = repo_root()
-    # By name only: the generators of the pre-rewrite models (domain.pddl /
-    # domain_scanner_separated.pddl, no longer in the tree). They do not fit the
-    # current models; pass --problem-gen for those.
-    if "scanner_separated" in domain_name or "scaner_separated" in domain_name:
-        return root / "pddl" / "problem_gen_scanner_separated.py"
-    return root / "pddl" / "problem_gen.py"
+    # Same lookup as tools/plan.py (domain-matched wrappers, `; source:` header,
+    # source domain file name).
+    from plan import select_problem_gen as plan_select_problem_gen
+
+    return plan_select_problem_gen(domain)
 
 
 def generate_problem_from_level(level_txt: Path, problem_name: str, domain: Path, explicit_gen: Optional[Path]) -> Tuple[Path, tempfile.TemporaryDirectory]:
@@ -203,7 +200,7 @@ def generate_problem_from_level(level_txt: Path, problem_name: str, domain: Path
         raise FileNotFoundError(f"Missing problem generator at {gen_py}")
     tmpdir = tempfile.TemporaryDirectory(prefix="gen_lifted_problem_")
     out_path = Path(tmpdir.name) / f"{problem_name}.pddl"
-    cmd = [sys.executable, str(gen_py), str(level_txt), "-p", problem_name]
+    cmd = [sys.executable, str(gen_py.resolve()), str(level_txt.resolve()), "-p", problem_name]
     rc, out, err = run_cmd_capture(cmd, cwd=Path(tmpdir.name))
     if rc != 0:
         tmpdir.cleanup()

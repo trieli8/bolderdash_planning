@@ -105,9 +105,10 @@ python tools/plan.py --play-plan plans/<problem>/fd.plan [--play-level <level.tx
 
 - Passing a `.txt` level file to `--problem` generates a temporary PDDL problem. The generator is the
   domain's sibling `problem_gen_<stem>.py` (every domain in `pddl/test_domains_target/` has one), else
-  the one mapped from the domain's `; source:` header, else the legacy `pddl/problem_gen.py`, which only
-  fits the pre-rewrite models. The source domains in `pddl/` have neither, so plan with the
-  `pddl/test_domains_target/` files.
+  the one mapped from the domain's `; source:` header, or from its own file name for the source domains
+  in `pddl/` (`domain_rowscan.pddl` -> `pddl/problem_gen_rowscan.py`, and so on), else the legacy
+  `pddl/problem_gen.py`, which only fits the pre-rewrite models. `tools/plan_lifted.py`,
+  `tools/validate_pddl.py` and the benchmarks use the same lookup.
 - Plans/logs are saved under `plans/<problem_name>/` (e.g., `fd.plan`, `fd.play.plan`, `ff.plan`, `*.stdout.txt`).
 - `--view` opens the first solved plan in `stonesandgem/build/bin/plan_player` after planning.
 

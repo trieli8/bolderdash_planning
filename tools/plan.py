@@ -629,19 +629,19 @@ def select_problem_gen(domain: Path) -> Path:
         "domain_scanner_separated.pddl": "problem_gen_scanner_separated.py",
     }
 
-    source_name = read_source_name(domain)
-    if source_name:
-        mapped = source_to_gen.get(source_name)
-        if mapped:
-            return root / "pddl" / mapped
-        domain_name = source_name.lower()
-    else:
-        domain_name = domain.name.lower()
+    # A generated variant names its source in a `; source:` header; a source
+    # domain itself (e.g. pddl/domain_rowscan.pddl) has no header, so its own
+    # file name is looked up instead.
+    source_name = read_source_name(domain) or domain.name
+    mapped = source_to_gen.get(source_name)
+    if mapped:
+        return root / "pddl" / mapped
+    domain_name = source_name.lower()
 
     # Last resort, by domain name: the generators of the pre-rewrite models
     # (domain.pddl / domain_scanner_separated.pddl, no longer in the tree).
     # Their problems lack the rounded-wall / flat-wall facts of the current
-    # models, which are matched above (problem_gen_<stem>.py or `; source:`).
+    # models, which are matched above.
     if "scanner_separated" in domain_name or "scaner_separated" in domain_name:
         return root / "pddl" / "problem_gen_scanner_separated.py"
     return root / "pddl" / "problem_gen.py"
@@ -660,8 +660,10 @@ def generate_problem_from_level(
         raise FileNotFoundError(f"Missing problem generator at {gen_py}")
     tmpdir = tempfile.TemporaryDirectory(prefix="gen_problem_")
     out_path = Path(tmpdir.name) / f"{problem_name}.pddl"
-    cmd = [sys.executable, str(gen_py), str(level_txt), "-p", problem_name]
-    rc, out, err = run_cmd_capture(cmd)
+    cmd = [sys.executable, str(gen_py.resolve()), str(level_txt.resolve()), "-p", problem_name]
+    # Run inside the temp dir: older generators also write <problem_name>.pddl
+    # to their working directory.
+    rc, out, err = run_cmd_capture(cmd, cwd=Path(tmpdir.name))
     if rc != 0:
         tmpdir.cleanup()
         raise RuntimeError(f"{gen_py.name} failed (rc={rc}): {err or out}")
