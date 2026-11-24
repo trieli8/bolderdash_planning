@@ -38,6 +38,10 @@ Examples:
   python3 tools/benchmarking/fd_sweep.py --fd ~/downward --groups B --shard 2/3
   # list jobs without running them
   python3 tools/benchmarking/fd_sweep.py --groups A,B,C --dry-run
+  # forced-action sweep, and a classic baseline with the same (lazy) configs on the same machine
+  python3 tools/benchmarking/fd_sweep.py --fd planners/fast-downward --fa --groups A,B,C
+  python3 tools/benchmarking/fd_sweep.py --fd planners/fast-downward --groups A,B,C \
+      --configs gbfs-ff,gbfs-add,gbfs-cea,gbfs-cg,wastar3-ff,lama-first,lazy-astar-blind,lazy-astar-hmax
 
 --fd is a Fast Downward checkout with a release build (./build.py). Without
 --fd, upstream release-24.06.1 is cloned and built into ~/.cache/fd_sweep.
@@ -401,6 +405,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fd", type=Path, help="Fast Downward checkout (default: build upstream 24.06.1)")
     ap.add_argument("--groups", default="A,B,C")
+    ap.add_argument("--configs", help="comma-separated subset of CONFIGS to run (default: the group's list)")
     ap.add_argument("--shard", default="0/1", help="i/N: run every N-th job starting at i")
     ap.add_argument("--jobs", type=int, default=default_jobs(), help="parallel jobs (default: cores, capped by RAM)")
     ap.add_argument("--timeout", type=int, default=300, help="search time limit per config (s)")
@@ -417,6 +422,13 @@ def main() -> int:
     groups = [g.strip() for g in a.groups.split(",") if g.strip()]
     si, sn = (int(x) for x in a.shard.split("/"))
     all_jobs = jobs(groups, a.fa)
+    if a.configs:
+        keep = [c.strip() for c in a.configs.split(",") if c.strip()]
+        unknown = [c for c in keep if c not in CONFIGS]
+        if unknown:
+            sys.exit(f"unknown configs: {', '.join(unknown)} (have: {', '.join(CONFIGS)})")
+        all_jobs = [(g, m, st, p, [c for c in cs if c in keep]) for g, m, st, p, cs in all_jobs]
+        all_jobs = [j for j in all_jobs if j[4]]
     mine = [j for i, j in enumerate(all_jobs) if i % sn == si]
     n_runs = sum(len(j[4]) for j in mine)
     print(f"{len(mine)} jobs / {n_runs} planner runs (shard {si}/{sn} of {len(all_jobs)} jobs, groups {groups})",
