@@ -35,6 +35,15 @@
 ; Physics does not depend on agent-alive, so a tick in which the agent dies
 ; still ends in a unique state (the agent can no longer move).
 ;
+; Fast Downward: no precondition or effect condition negates agent-at,
+; target-gem, stone or gem.  The translator can make each of them a single
+; variable with one value per cell (agent-at and target-gem always; stone or
+; gem on a level with only one stone or gem), and it expands a negated
+; literal over such a variable into one operator per other value.  The
+; predicates still negated (empty, falling, pending, pushed) are added
+; without a matching delete somewhere (e.g. empty when the agent mines dirt),
+; so they never become such a variable.
+;
 ; The test-domain variants
 ; (pddl/test_domains_target/domain_{classic,FA}_non-scanner_combined.pddl)
 ; are generated with
@@ -123,33 +132,22 @@
       (increase (total-cost) 1))
   )
 
-  ;; Collect an ordinary gem (resting or falling).
+  ;; Collect a gem (resting or falling); collecting the target gem also
+  ;; achieves got-gem.  One action with a conditional effect, not a plain-gem
+  ;; action with (not (target-gem ?to)): Fast Downward makes target-gem one
+  ;; variable with a value per cell, and would expand that negated
+  ;; precondition into one operator per other cell.
   (:action move_into_gem
     :parameters (?from ?to - real-cell)
     :precondition (and
       (agent-alive) (not (update-required))
       (agent-at ?from)
       (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
-      (gem ?to) (not (target-gem ?to)))
+      (gem ?to))
     :effect (and
       (not (agent-at ?from)) (empty ?from)
       (not (gem ?to)) (not (falling ?to)) (agent-at ?to)
-      (update-required) (tick-start)
-      (increase (total-cost) 1))
-  )
-
-  ;; Collect the distinguished target gem.
-  (:action move_into_target_gem
-    :parameters (?from ?to - real-cell)
-    :precondition (and
-      (agent-alive) (not (update-required))
-      (agent-at ?from)
-      (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
-      (gem ?to) (target-gem ?to))
-    :effect (and
-      (not (agent-at ?from)) (empty ?from)
-      (not (gem ?to)) (not (target-gem ?to)) (not (falling ?to)) (agent-at ?to)
-      (got-gem)
+      (when (target-gem ?to) (and (got-gem) (not (target-gem ?to))))
       (update-required) (tick-start)
       (increase (total-cost) 1))
   )

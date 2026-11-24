@@ -38,6 +38,15 @@
 ; action is applicable.  Physics does not depend on agent-alive, so a tick in
 ; which the agent dies still ends in a unique state.
 ;
+; Fast Downward: no precondition or effect condition negates agent-at,
+; target-gem, stone or gem.  The translator can make each of them a single
+; variable with one value per cell (agent-at and target-gem always; stone or
+; gem on a level with only one stone or gem), and it expands a negated
+; literal over such a variable into one operator per other value.
+; The predicates still negated (empty, falling, pending, pushed) are added
+; without a matching delete somewhere (e.g. empty when the agent mines dirt),
+; so they never become such a variable.
+;
 ; The test-domain variants
 ; (pddl/test_domains_target/domain_{classic,FA}_non-scanner_separated.pddl)
 ; are generated with
@@ -137,33 +146,22 @@
       (increase (total-cost) 1))
   )
 
-  ;; Collect an ordinary gem (resting or falling).
+  ;; Collect a gem (resting or falling); collecting the target gem also
+  ;; achieves got-gem.  One action with a conditional effect, not a plain-gem
+  ;; action with (not (target-gem ?to)): Fast Downward makes target-gem one
+  ;; variable with a value per cell, and would expand that negated
+  ;; precondition into one operator per other cell.
   (:action move_into_gem
     :parameters (?from ?to - real-cell)
     :precondition (and
       (agent-alive) (not (update-required))
       (agent-at ?from)
       (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
-      (gem ?to) (not (target-gem ?to)))
+      (gem ?to))
     :effect (and
       (not (agent-at ?from)) (empty ?from)
       (not (gem ?to)) (not (falling ?to)) (agent-at ?to)
-      (update-required) (tick-start)
-      (increase (total-cost) 1))
-  )
-
-  ;; Collect the distinguished target gem.
-  (:action move_into_target_gem
-    :parameters (?from ?to - real-cell)
-    :precondition (and
-      (agent-alive) (not (update-required))
-      (agent-at ?from)
-      (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
-      (gem ?to) (target-gem ?to))
-    :effect (and
-      (not (agent-at ?from)) (empty ?from)
-      (not (gem ?to)) (not (target-gem ?to)) (not (falling ?to)) (agent-at ?to)
-      (got-gem)
+      (when (target-gem ?to) (and (got-gem) (not (target-gem ?to))))
       (update-required) (tick-start)
       (increase (total-cost) 1))
   )
@@ -244,12 +242,19 @@
       (not (active ?c)) (not (busy)) (not (pending ?c)))
   )
 
+  ;; The cell below is occupied and the object stays on it for now: anything
+  ;; but empty, where the agent only counts under a resting object (a falling
+  ;; one crushes it).  Spelled out over the cell contents (exactly one per
+  ;; cell) instead of (not (empty ?down)) and (not (agent-at ?down)):
+  ;; agent-at is one Fast Downward variable with a value per cell, so a
+  ;; negated agent-at expands into one operator per agent position.
   (:action not_fall
     :parameters (?c - real-cell ?down - cell)
     :precondition (and
       (active ?c) (check_fall)
-      (down ?c ?down) (not (empty ?down))
-      (or (not (falling ?c)) (not (agent-at ?down))))
+      (down ?c ?down)
+      (or (dirt ?down) (stone ?down) (gem ?down) (rounded-wall ?down) (flat-wall ?down)
+          (and (agent-at ?down) (not (falling ?c)))))
     :effect (and (not (check_fall)) (check_roll_left))
   )
 
@@ -265,13 +270,18 @@
     :effect (and (not (check_roll_left)) (can_roll_left) (ready_to_move))
   )
 
+  ;; Roll left blocked: the support is not rounded (empty, dirt, the agent, a
+  ;; flat wall / the border, or a falling stone/gem), or left / down-left is
+  ;; occupied.  "Not rounded" is spelled out over the cell contents: on a
+  ;; level with a single stone (gem), Fast Downward makes stone (gem) one
+  ;; variable with a value per cell, and a negated (stone ?down) /
+  ;; (gem ?down) would expand into one operator per cell.
   (:action not_roll_left
     :parameters (?c - real-cell ?down ?left ?down_left - cell)
     :precondition (and
       (active ?c) (check_roll_left)
       (down ?c ?down) (right-of ?left ?c) (down ?left ?down_left)
-      (or (and (not (rounded-wall ?down))
-               (or (falling ?down) (and (not (stone ?down)) (not (gem ?down)))))
+      (or (empty ?down) (dirt ?down) (agent-at ?down) (flat-wall ?down) (falling ?down)
           (not (empty ?left))
           (not (empty ?down_left))))
     :effect (and (not (check_roll_left)) (check_roll_right))
@@ -292,8 +302,7 @@
     :precondition (and
       (active ?c) (check_roll_right)
       (down ?c ?down) (right-of ?c ?right) (down ?right ?down_right)
-      (or (and (not (rounded-wall ?down))
-               (or (falling ?down) (and (not (stone ?down)) (not (gem ?down)))))
+      (or (empty ?down) (dirt ?down) (agent-at ?down) (flat-wall ?down) (falling ?down)
           (not (empty ?right))
           (not (empty ?down_right))))
     :effect (and (not (check_roll_right)) (ready_to_move))

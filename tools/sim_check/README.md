@@ -51,7 +51,10 @@ can be updated in any order, and every order ends the tick in the same state.
 - `pddl_exec.py` – small PDDL parser / grounder / executor (typing, negative,
   disjunctive and quantified preconditions, conditional and universal effects).
   `task_stats()` reports operator counts after relaxed-reachability pruning
-  and disjunction splitting, roughly what Fast Downward's translator produces.
+  and disjunction splitting. It does not model the translator's expansion of
+  negated preconditions on multi-valued variables (one operator per other
+  value), so it can be far below what Fast Downward actually produces; use the
+  FD translator for real operator counts.
 - `regression_cases.txt` – `name;level;actions` lines.
 
 ## Scope

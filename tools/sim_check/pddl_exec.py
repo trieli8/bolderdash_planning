@@ -556,7 +556,14 @@ def task_stats(task: "Task") -> Dict[str, float]:
     Disjunctive preconditions are split into one operator per DNF disjunct
     (as FD's translator does); operators whose positive preconditions are not
     relaxed-reachable from the initial state are dropped.  Negative literals
-    are ignored for reachability (also as in FD)."""
+    are ignored for reachability (also as in FD).
+
+    This counts STRIPS operators, not the SAS+ operators FD's translator
+    writes.  The translator also expands every negated precondition on a
+    fact it puts into a multi-valued variable into one operator per other
+    value of that variable (e.g. (not (target-gem ?c)) with one target-gem
+    value per cell); that is not modelled here, so run the FD translator for
+    real numbers (see pddl/test_domains_target/README.md)."""
     ops = []
     for ga in task.ground_actions:
         for pos, neg in _dnf(ga.pre):

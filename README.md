@@ -236,11 +236,12 @@ problems come from `pddl/problem_gen_rowscan.py` (picked automatically through t
   behave identically.
 - Fast: walls are left out of the scan, and each row has a gate that skips the row
   in one step unless something in it or in the row below changed since it was last
-  scanned. On a 20x38 benchmark level this is ~16.6k operators versus ~189k for the
-  previous scanner model (after Fast Downward-style disjunction splitting), and a
-  typical tick takes 96 physics steps instead of 761 (20 row gates + the two rows
-  around the agent; the first few ticks of a level cost more while its initial
-  rockfall settles).
+  scanned. On a 20x38 benchmark level Fast Downward's translator produces ~18k
+  operators (see "Problem size" in `pddl/test_domains_target/README.md`; the
+  `pddl_exec.task_stats` estimate was ~16.6k versus ~189k for the previous
+  scanner model), and a typical tick takes 96 physics steps instead of 761 (20
+  row gates + the two rows around the agent; the first few ticks of a level cost
+  more while its initial rockfall settles).
 - Not modelled: the level time limit, and engine elements other than the ones above
   (the generator treats them as flat walls).
 

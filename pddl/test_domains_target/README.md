@@ -53,7 +53,10 @@ Observed status: all 16 solved.
 The eight classic / FA files have since been rewritten (see "Engine
 conformance" below); they were checked with `tools/sim_check` (differential
 fuzzing, and plans found on `pddl/level_5_5.txt` and a 20x38 benchmark level
-replayed in the engine), not re-run through Fast Downward.
+replayed in the engine). With Fast Downward 24.06.1 (A* + hmax) the four
+classic files all give the optimal 12 moves on `pddl/level_10_10.txt` and 8
+moves on `pddl/level_5_5_high_stone.txt`, and those plans replay correctly in
+the engine. See "Problem size" below for the translator on 20x38 levels.
 
 ## Variant Problem Generators (No-Write)
 
@@ -180,17 +183,95 @@ An agent killed by a falling object does not stop the physics (it does not
 depend on `agent-alive`), so such a tick still ends in a unique state; no
 `move_*` action is applicable afterwards.
 
-### Problem size (20x38 benchmark level `test_problems/h1/bd_level_01_start_gem_001_target_gem_005.txt`)
+### Problem size (Fast Downward translator)
 
-Fast Downward-style operator counts from `tools/sim_check/pddl_exec.task_stats`
-(after relaxed reachability and disjunction splitting):
+Fast Downward 24.06.1 translator, default settings, on the 20x38 benchmark
+level `test_problems/h1/bd_level_01_start_gem_001_target_gem_005.txt` (the FA
+files give the same numbers; they differ only in action names):
 
-| variant | operators |
-|---|---|
-| `*_scanner_combined` | ~16.6k |
-| `*_scanner_separated` | ~32.5k |
-| `*_non-scanner_combined` | ~7.6k |
-| `*_non-scanner_separated` | ~8.7k |
+| variant | SAS operators | SAS variables | translate time | peak memory |
+|---|---|---|---|---|
+| `*_scanner_combined` | 18,168 | 4,881 | 22 s | 255 MB |
+| `*_scanner_separated` | 37,535 | 4,311 | 16 s | 259 MB |
+| `*_non-scanner_combined` | 20,313 | 4,713 | 24 s | 395 MB |
+| `*_non-scanner_separated` | 30,659 | 5,833 | 17 s | 243 MB |
 
-`tools/sim_check/plan_check.py` finds a 30-move plan on that level with each
-of them, and the plan is valid when replayed in the engine.
+Every 15th level of `test_problems/h1` and `h2` (22 levels; all the same map
+with different start / target gems) gives the same picture: each model
+translates in 15-26 s using at most 400 MB, with 18,168 (`scanner_combined`),
+37,535-37,977 (`scanner_separated`), 20,313 (`non-scanner_combined`) and
+30,659-30,883 (`non-scanner_separated`) operators. Before the fix all four
+models ran out of memory (3 GB) on the level in the table. With
+`*_scanner_combined`, Fast Downward's `lama-first` now solves that level in 18 s
+of search (32 moves; the plan is valid when replayed in the engine).
+
+Reproduce with the translator alone (`fast-downward.py --translate`), e.g.
+
+```bash
+python3 pddl/problem_gen_rowscan.py pddl/test_problems/h1/bd_level_01_start_gem_001_target_gem_005.txt > /tmp/h1.pddl
+```
+
+```bash
+fast-downward.py --translate pddl/test_domains_target/domain_classic_scanner_combined.pddl /tmp/h1.pddl
+```
+
+(`problem_gen_cellscan.py` for the scanner-separated files,
+`problem_gen_orderfree.py` for the non-scanner ones.) The translator prints
+`Translator operators: N`.
+
+**No negated preconditions on "one per level" facts.** FD's invariant
+synthesis turns every predicate of which at most one atom can be true into a
+single variable with one value per cell: always `agent-at`, `target-gem`
+(together with `got-gem`) and the scan pointer `scan-at`, and `stone` / `gem` /
+`obj` on a level with only one stone or gem. On the 20x38 level above these
+are `agent-at` with 695-760 values and `target-gem` / `got-gem` with 459-495,
+depending on the model. The translator compiles a negated precondition (or
+effect condition) on such a fact into one operator per *other* value of that
+variable. Until this was fixed, every 20x38 level in `test_problems/h1` and
+`h2` failed with a `MemoryError` in `translate_strips_operators` at 3 GB, for
+all four models; on `pddl/test_mini.txt` (19x11, a single gem)
+`*_scanner_separated` gave 309,841 operators, 162,184 of them from
+`move_into_gem` (`(not (target-gem ?to))`: 776 groundings x 209 values), most
+of the rest from `not_fall` (`(not (agent-at ?down))`) and `not_roll_left` /
+`not_roll_right` (`(not (gem ?down))`, `gem` being one variable on that
+level). The domains now avoid this:
+
+- `move_into_gem` also collects the target gem, with the conditional effect
+  `(when (target-gem ?to) (and (got-gem) (not (target-gem ?to))))`, instead of
+  a separate `move_into_target_gem` and a `(not (target-gem ?to))`
+  precondition (the physics actions already carry the marker with
+  `(when (target-gem ?c) ...)`; positive effect conditions do not expand);
+- `not_fall`, `not_roll_left` and `not_roll_right` (separated models) test
+  the support cell positively over its contents, e.g. "not empty, and not the
+  agent unless the object is resting" is
+  `(or (dirt ?down) (stone ?down) (gem ?down) (rounded-wall ?down) (flat-wall ?down) (and (agent-at ?down) (not (falling ?c))))`.
+
+The negations left are on `empty`, `falling`, `updated`, `pending`, `pushed`,
+`row-dirty` and 0-ary flags. Each of these predicates is added somewhere
+without a matching delete (e.g. `empty` when the agent mines dirt), so the
+translator never builds such a variable for them.
+
+`pddl/test_mini.txt` (19x11, one gem), SAS operators before / after:
+
+| variant | before | after |
+|---|---|---|
+| `*_scanner_combined` | 1,338 | 1,337 |
+| `*_scanner_separated` | 309,841 | 8,654 |
+| `*_non-scanner_combined` | 1,129 | 1,128 |
+| `*_non-scanner_separated` | 272,008 | 7,250 |
+
+On this level the combined models had nothing to expand: relaxed
+reachability already keeps the agent in the top row (11 `agent-at` values) and
+the gem on its start cell (1 `target-gem` value). In the separated models the
+check and act actions are linked only by 0-ary flags (`can_fall`, ...), which
+makes relaxed reachability much coarser: 209 cells are reachable for the
+agent and the gem, hence the expansion. On the 20x38 levels every model has
+large `agent-at` and `target-gem` variables (see above).
+
+`tools/sim_check/plan_check.py` finds a 30-move plan on the 20x38 level above
+with each model, and the plan is valid when replayed in the engine.
+
+The table used to show `tools/sim_check/pddl_exec.task_stats` estimates
+(~16.6k / ~32.5k / ~7.6k / ~8.7k). They count STRIPS operators and do not
+model the negation expansion, so they did not show the problem; use the FD
+translator for operator counts.

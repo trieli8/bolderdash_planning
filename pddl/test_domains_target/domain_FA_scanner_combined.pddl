@@ -22,7 +22,15 @@
 ; changed since the row was last scanned (in which case every object in it is
 ; provably stable).  updated flags are cleared by the scan itself, so a tick
 ; ends without any forall reset.  Preconditions are positive except on the
-; binary flags (updated, row-dirty, target-gem).
+; binary flags (updated, row-dirty).
+;
+; Fast Downward: no precondition or effect condition negates agent-at,
+; target-gem, scan-at, obj, stone or gem.  The translator can make each of
+; them a single variable with one value per cell (agent-at, target-gem and
+; scan-at always; obj, stone or gem on a level with only one such object),
+; and it expands a negated literal over such a variable into one operator per
+; other value.  The predicates still negated (updated, row-dirty) are added
+; without a matching delete, so they never become such a variable.
 ;
 ; Agent actions are the move_* actions; every other action is physics and is
 ; deterministic: in any state exactly one of them is applicable while a tick
@@ -130,37 +138,23 @@
       (increase (total-cost) 1))
   )
 
-  ;; Collect an ordinary gem (resting or falling).
+  ;; Collect a gem (resting or falling); collecting the target gem also
+  ;; achieves got-gem.  One action with a conditional effect, not a plain-gem
+  ;; action with (not (target-gem ?to)): Fast Downward makes target-gem one
+  ;; variable with a value per cell, and would expand that negated
+  ;; precondition into one operator per other cell.
   (:action move_into_gem
     :parameters (?from ?to - real-cell ?d ?r0 ?rf ?rfa - row)
     :precondition (and
       (agent-alive) (scan-at ?d) (scan-done ?d) (first-row ?r0)
       (agent-at ?from)
       (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
-      (obj ?to) (gem ?to) (not (target-gem ?to))
+      (obj ?to) (gem ?to)
       (cell-row ?from ?rf) (row-above ?rf ?rfa))
     :effect (and
       (not (agent-at ?from)) (empty ?from) (not (full ?from))
       (not (obj ?to)) (not (gem ?to)) (not (falling ?to)) (not (resting ?to)) (agent-at ?to)
-      (row-dirty ?rf) (row-dirty ?rfa)
-      (not (scan-at ?d)) (scan-at ?r0)
-      (increase (total-cost) 1))
-  )
-
-  ;; Collect the distinguished target gem.
-  (:action move_into_target_gem
-    :parameters (?from ?to - real-cell ?d ?r0 ?rf ?rfa - row)
-    :precondition (and
-      (agent-alive) (scan-at ?d) (scan-done ?d) (first-row ?r0)
-      (agent-at ?from)
-      (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
-      (obj ?to) (gem ?to) (target-gem ?to)
-      (cell-row ?from ?rf) (row-above ?rf ?rfa))
-    :effect (and
-      (not (agent-at ?from)) (empty ?from) (not (full ?from))
-      (not (obj ?to)) (not (gem ?to)) (not (target-gem ?to)) (not (falling ?to)) (not (resting ?to))
-      (agent-at ?to)
-      (got-gem)
+      (when (target-gem ?to) (and (got-gem) (not (target-gem ?to))))
       (row-dirty ?rf) (row-dirty ?rfa)
       (not (scan-at ?d)) (scan-at ?r0)
       (increase (total-cost) 1))
