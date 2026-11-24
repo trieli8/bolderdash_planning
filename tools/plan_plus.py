@@ -196,6 +196,9 @@ def select_problem_gen(domain: Path) -> Path:
     if "scanner_separated" in name:
         return root / "pddl" / "problem_gen_scanner_separated.py"
 
+    # Last resort: the classic generator of the pre-rewrite models (domain.pddl,
+    # no longer in the tree). Not a PDDL+ generator; pass --problem-gen for
+    # anything the rules above do not cover.
     return root / "pddl" / "problem_gen.py"
 
 

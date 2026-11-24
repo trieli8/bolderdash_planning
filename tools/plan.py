@@ -360,6 +360,7 @@ def solve_with_ff(
 
     with tempfile.TemporaryDirectory(prefix="ff_run_") as td:
         td_path = Path(td)
+        # Fixed names for the copies inside the scratch dir, not repo paths.
         dname = "domain.pddl"
         pname = "problem.pddl"
         shutil.copy2(domain, td_path / dname)
@@ -637,6 +638,10 @@ def select_problem_gen(domain: Path) -> Path:
     else:
         domain_name = domain.name.lower()
 
+    # Last resort, by domain name: the generators of the pre-rewrite models
+    # (domain.pddl / domain_scanner_separated.pddl, no longer in the tree).
+    # Their problems lack the rounded-wall / flat-wall facts of the current
+    # models, which are matched above (problem_gen_<stem>.py or `; source:`).
     if "scanner_separated" in domain_name or "scaner_separated" in domain_name:
         return root / "pddl" / "problem_gen_scanner_separated.py"
     return root / "pddl" / "problem_gen.py"

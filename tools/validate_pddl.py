@@ -3,10 +3,10 @@
 Compare PDDL simulation (via Fast Downward translate/SAS) against native stonesngems trace.
 
 Usage:
-  python tools/validate_pddl.py --domain pddl/domain.pddl --problem pddl/level01.pddl \
-      --plan plans/level-1/fd-opt.plan --native-trace native_trace.jsonl
-  python tools/validate_pddl.py --problem pddl/level01.pddl \
-      --human-plan plans/level-1/fd.play.plan --human-plan-format directions
+  python tools/validate_pddl.py --domain pddl/test_domains_target/domain_FA_scanner_combined.pddl \
+      --problem pddl/level_5_5.txt --plan plans/level_5_5/fd.plan --native-trace native_trace.jsonl
+  python tools/validate_pddl.py --problem pddl/level_5_5.txt \
+      --human-plan plans/level_5_5/fd.play.plan --human-plan-format directions
 
 Steps:
   - Run FD translator to get SAS.
@@ -1068,8 +1068,10 @@ def validate_plan_diff(
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Compare stonesngems native trace vs PDDL simulation step-by-step.")
-    ap.add_argument("--domain", type=Path, default=repo_root() / "pddl" / "domain.pddl",
-                    help="Domain PDDL (default: pddl/domain.pddl)")
+    ap.add_argument("--domain", type=Path,
+                    default=repo_root() / "pddl" / "test_domains_target" / "domain_FA_scanner_combined.pddl",
+                    help="Domain PDDL (default: pddl/test_domains_target/domain_FA_scanner_combined.pddl, "
+                         "the deterministic forced-action scanner model used by the benchmarks)")
     ap.add_argument("--problem", required=True, type=Path, help="Problem PDDL or level txt (used for both planning and stones_trace)")
     ap.add_argument("--plan", type=Path, help="Plan in S-expression (e.g., fd-opt.plan). If omitted, FD will generate one.")
     ap.add_argument("--human-plan", type=Path,

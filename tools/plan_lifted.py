@@ -189,6 +189,9 @@ def write_direction_plan(path: Path, actions: List[Tuple[str, List[str]]]) -> No
 def select_problem_gen(domain: Path) -> Path:
     domain_name = domain.name.lower()
     root = repo_root()
+    # By name only: the generators of the pre-rewrite models (domain.pddl /
+    # domain_scanner_separated.pddl, no longer in the tree). They do not fit the
+    # current models; pass --problem-gen for those.
     if "scanner_separated" in domain_name or "scaner_separated" in domain_name:
         return root / "pddl" / "problem_gen_scanner_separated.py"
     return root / "pddl" / "problem_gen.py"
