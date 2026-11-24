@@ -28,7 +28,7 @@ from analyze_sweep import (EXHAUSTED, MODELS, OPT_CFGS, SAT_CFGS, SET_LABEL, SET
 
 ROOT = Path(__file__).resolve().parents[2]
 FA_AWARE = ["gbfs-ff", "gbfs-add", "gbfs-cea", "gbfs-cg", "wastar3-ff", "lama-first",
-            "lazy-astar-blind", "lazy-astar-hmax"]
+            "lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb"]
 
 
 def parse_sel(s: str):
@@ -206,7 +206,7 @@ def main() -> int:
         + " | cost = known optimum | cost ≠ |")
     out("|---|---|" + "---|" * (len([s for s in SETS if s in probs]) + 2))
     for m in models:
-        for c in ("lazy-astar-blind", "lazy-astar-hmax"):
+        for c in ("lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb"):
             cells = [cov_cell(FA, m, c, [p for p in probs[s] if p not in nop]) for s in SETS if s in probs]
             if not any(cells):
                 continue

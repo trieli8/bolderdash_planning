@@ -32,7 +32,7 @@ SHORT = {"scanner_combined": "scan-comb", "scanner_separated": "scan-sep",
          "non-scanner_combined": "orderfree-comb", "non-scanner_separated": "orderfree-sep"}
 MODELS = list(SHORT)
 SAT_CFGS = ["gbfs-ff", "eager-gbfs-ff", "gbfs-add", "gbfs-cea", "gbfs-cg", "wastar3-ff", "lama-first"]
-OPT_CFGS = ["astar-blind", "astar-hmax", "astar-lmcp", "astar-ms", "lazy-astar-blind", "lazy-astar-hmax"]
+OPT_CFGS = ["astar-blind", "astar-hmax", "astar-lmcp", "astar-ms", "lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb"]
 CFGS = SAT_CFGS + OPT_CFGS
 SETS = ["small", "l1", "other"]
 SET_LABEL = {"small": "small (hand-made, 5x5..40x11)", "l1": "bd_level_01 20x38 (h1+h2)",

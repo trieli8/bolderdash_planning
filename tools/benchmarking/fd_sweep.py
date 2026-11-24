@@ -41,7 +41,7 @@ Examples:
   # forced-action sweep, and a classic baseline with the same (lazy) configs on the same machine
   python3 tools/benchmarking/fd_sweep.py --fd planners/fast-downward --fa --groups A,B,C
   python3 tools/benchmarking/fd_sweep.py --fd planners/fast-downward --groups A,B,C \
-      --configs gbfs-ff,gbfs-add,gbfs-cea,gbfs-cg,wastar3-ff,lama-first,lazy-astar-blind,lazy-astar-hmax
+      --configs gbfs-ff,gbfs-add,gbfs-cea,gbfs-cg,wastar3-ff,lama-first,lazy-astar-blind,lazy-astar-hmax,lazy-astar-hmax-tb
 
 --fd is a Fast Downward checkout with a release build (./build.py). Without
 --fd, upstream release-24.06.1 is cloned and built into ~/.cache/fd_sweep.
@@ -49,7 +49,7 @@ Examples:
 --fa runs the domain_FA_* files instead; that only makes sense with the
 forced-action fork (planners/fast-downward), and only its lazy searches
 (FA_AWARE: gbfs-ff, gbfs-add, gbfs-cea, gbfs-cg, wastar3-ff, lama-first and
-the lazy A* configs lazy-astar-blind / lazy-astar-hmax) apply __FORCED__
+the lazy A* configs lazy-astar-*) apply __FORCED__
 actions automatically. The eager / A* configs would treat them as ordinary
 actions and reproduce the classic runs, so --fa runs only the FA_AWARE configs.
 With --fa, group C runs every FA_AWARE config on every problem: forced
@@ -58,7 +58,8 @@ interleaving blow-up that kept group C to 6 large problems does not apply.
 
 lazy-astar-blind / lazy-astar-hmax are lazy_wastar(w=1) with an admissible
 heuristic (reopening on), i.e. optimal; under --fa they are the fork's optimal
-setting (tools/plan.py --optimal uses lazy-astar-blind).
+setting (tools/plan.py --optimal uses lazy-astar-blind). lazy-astar-hmax-tb is
+the same lazy A* with hmax but breaks f ties on h, as astar() does.
 
 The fork logs a JSON line per search state for its GUI unless FD_STATE_DUMP=0;
 the sweep sets FD_STATE_DUMP=0 for every planner call (no effect on upstream FD).
@@ -125,10 +126,13 @@ CONFIGS = {
                        "max_states=50000,threshold_before_merge=1,main_loop_max_time=60))"]),
     "lazy-astar-blind": (OPT, ["--search", "lazy_wastar([blind()], w=1)"]),
     "lazy-astar-hmax": (OPT, ["--search", "lazy_wastar([hmax()], w=1)"]),
+    # lazy A* that breaks f ties on h like astar(); lazy_wastar breaks them FIFO and sweeps the whole
+    # f = C* plateau (FA scanner_combined, 20x38, cost 55: 74 expansions / 1 s vs timeout)
+    "lazy-astar-hmax-tb": (OPT, ["--search", "let(h, hmax(), lazy(tiebreaking([sum([g(), h]), h]), reopen_closed=true))"]),
 }
 # configs whose search is LazySearch, the only one that applies __FORCED__ actions in the fork
 FA_AWARE = ["gbfs-ff", "gbfs-add", "gbfs-cea", "gbfs-cg", "wastar3-ff", "lama-first",
-            "lazy-astar-blind", "lazy-astar-hmax"]
+            "lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb"]
 
 # FD's driver cannot limit memory on macOS; watch the RSS there instead
 WATCHDOG = sys.platform == "darwin"
