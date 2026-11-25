@@ -149,11 +149,12 @@ def main() -> int:
         if s not in probs:
             continue
         out(f"\n### {SET_LABEL[s]}\n")
-        out("| model | " + " | ".join(CFGS) + " |")
-        out("|---|" + "---|" * len(CFGS))
+        cfgs_here = [c for c in CFGS if any(r["config"] == c for r in rows)]
+        out("| model | " + " | ".join(cfgs_here) + " |")
+        out("|---|" + "---|" * len(cfgs_here))
         for m in models:
             cells = []
-            for c in CFGS:
+            for c in cfgs_here:
                 rs = [idx.get((m, p, c)) for p in probs[s] if p not in nop]
                 rs = [r for r in rs if r]
                 if not rs:
