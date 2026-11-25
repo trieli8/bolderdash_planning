@@ -1,0 +1,6 @@
+host=vm
+cpus=4
+ram_gb=16
+cpu=Intel(R) Xeon(R) Processor @ 2.10GHz
+platform=Linux-6.18.44-fc-v880-x86_64-with-glibc2.39
+run[results_vm.csv]=jobs=4 timeout=300s mem=3G mem_limit=rlimit (FD driver) fd=downward@1eef26b FD_STATE_DUMP=0 domains=a1a50ba
