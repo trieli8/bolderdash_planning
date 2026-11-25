@@ -10,6 +10,11 @@ the same machine, so --timing names a second classic selection (e.g. a classic
 baseline run on the FA machine) used for the time ratios; without it the time
 columns compare across machines and are labelled so.
 
+--speed=K (FA machine K times faster than the classic one, e.g. estimated from
+the translator times, which the report prints) adds, in each FA coverage cell,
+how many FA solves stay within 300/K s of search time, i.e. the coverage FA
+would have under the classic machine's effective limit.
+
 Expansions are not the same unit on both sides: classic search expands every
 intermediate physics state, FA search only the states where the agent moves
 (forced actions are applied inside one expansion). "evaluated" counts every
@@ -51,12 +56,16 @@ def solved(r):
     return r is not None and r["status"] == "solved"
 
 
-def cov_cell(idx, m, c, ps):
+def cov_cell(idx, m, c, ps, limit=None):
     rs = [idx.get((m, p, c)) for p in ps]
     rs = [r for r in rs if r]
     if not rs:
         return ""
     n = sum(solved(r) for r in rs)
+    if limit is not None:
+        k = sum(solved(r) and (fnum(r["search_s"]) or 0) <= limit for r in rs)
+        if k != n:
+            return f"{n}/{len(rs)} [{k} ≤{limit:.0f}s]" + cov_cell(idx, m, c, ps)[len(f"{n}/{len(rs)}"):]
     fails = defaultdict(int)
     for r in rs:
         if not solved(r):
@@ -72,6 +81,8 @@ def main() -> int:
     fa_sel = parse_sel(opts.get("--fa", "inv0+fa"))
     cl_sel = parse_sel(opts.get("--classic", "inv0"))
     tm_sel = parse_sel(opts["--timing"]) if "--timing" in opts else None
+    speed = float(opts["--speed"]) if "--speed" in opts else None
+    limit = 300 / speed if speed else None
     rows = load(d)
     FA, CL = select(rows, fa_sel), select(rows, cl_sel)
     TM = select(rows, tm_sel) if tm_sel else CL
@@ -94,6 +105,19 @@ def main() -> int:
         out(f"- classic timing baseline: **{label(tm_sel)}** ({len(TM)} runs, same machine as FA)")
     else:
         out("- no same-machine classic baseline: time ratios compare different machines")
+    # translation is the same Python code on identical tasks on both sides: a rough machine speed ratio
+    tr = defaultdict(dict)
+    for side, idx in (("cl", CL), ("fa", FA)):
+        for (m, p, c), r in idx.items():
+            if fnum(r.get("translate_s")) and fnum(r["translate_s"]) > 3:
+                tr[(m, p)][side] = fnum(r["translate_s"])
+    ratios = [v["cl"] / v["fa"] for v in tr.values() if len(v) == 2]
+    if ratios:
+        out(f"- translate time classic / FA side (same tasks, {len(ratios)} problems): median "
+            f"{statistics.median(ratios):.2f}x (range {min(ratios):.2f}-{max(ratios):.2f}), a rough machine speed ratio")
+    if speed:
+        out(f"- `[k ≤{limit:.0f}s]` in an FA coverage cell: solves within 300/{speed:g} s of search time "
+            "(the classic machine's limit scaled by --speed); shown only where it differs")
     hosts = sorted({r["host"] for r in allidx})
     for h in hosts:
         hf = d / f"host_{h}.txt"
@@ -163,7 +187,7 @@ def main() -> int:
             cells, any_ = [], False
             for s in sets:
                 ps = [p for p in probs[s] if p not in nop]
-                a, b = cov_cell(CL, m, c, ps), cov_cell(FA, m, c, ps)
+                a, b = cov_cell(CL, m, c, ps), cov_cell(FA, m, c, ps, limit)
                 any_ |= bool(a or b)
                 cells.append(f"{a or '–'} → {b or '–'}")
             if any_:

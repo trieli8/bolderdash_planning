@@ -2,7 +2,7 @@
 
 Variant **inv0+fa** (translator options; +fa = forced-action fork). Other variants in the data: inv0 (pick with --variant=NAME).
 
-1728 runs from host(s) m5pro; models: scan-comb, scan-sep, orderfree-comb, orderfree-sep.
+1944 runs from host(s) m5pro; models: scan-comb, scan-sep, orderfree-comb, orderfree-sep.
 
 - **m5pro**: host=m5pro; cpus=18; ram_gb=48; cpu=Apple M5 Pro; platform=macOS-26.5.2-arm64-arm-64bit-Mach-O; run[results_m5pro_fa.csv]=jobs=12 timeout=300s mem=3G mem_limit=rss-watchdog (macOS: FD cannot set memory limits) fd=fast-downward@3afd34949 + local changes (src/search/utils/state_dump.cc, src/search/utils/state_dump.h) FD_STATE_DUMP=0
 
@@ -27,7 +27,7 @@ Problems with no plan (search space exhausted; [models that proved it]), exclude
 | scan-comb | 24/24 | 24/24 | 24/24 | 5/24 (19MO) | 24/24 | 24/24 | 7/24 (17MO) | 14/24 (10MO) | 22/24 (2MO) |
 | scan-sep | 24/24 | 24/24 | 24/24 | 4/24 (20MO) | 24/24 | 24/24 | 4/24 (20MO) | 4/24 (20MO) | 6/24 (18MO) |
 | orderfree-comb | 24/24 | 24/24 | 24/24 | 7/24 (11MO 6TO) | 24/24 | 24/24 | 7/24 (14MO 3TO) | 15/24 (5MO 4TO) | 22/24 (2MO) |
-| orderfree-sep | 17/17 | 17/17 | 17/17 | 4/17 (13MO) | 17/17 | 17/17 | 5/17 (11MO 1TO) | 7/17 (6MO 4TO) | 7/17 (9MO 1TO) |
+| orderfree-sep | 18/24 (3MO 3TO) | 18/24 (6MO) | 18/24 (5MO 1TO) | 4/24 (20MO) | 18/24 (1MO 5TO) | 18/24 (6MO) | 5/24 (17MO 2TO) | 7/24 (9MO 8TO) | 7/24 (11MO 6TO) |
 
 ### bd_levels 02..14
 
@@ -36,7 +36,7 @@ Problems with no plan (search space exhausted; [models that proved it]), exclude
 | scan-comb | 16/16 | 16/16 | 16/16 | 1/16 (15MO) | 16/16 | 15/16 (1MO) | 1/16 (15MO) | 5/16 (11MO) | 12/16 (4MO) |
 | scan-sep | 14/16 (2MO) | 12/16 (4MO) | 12/16 (4MO) | 1/16 (15MO) | 12/16 (4MO) | 12/16 (4MO) | 1/16 (15MO) | 1/16 (15MO) | 1/16 (15MO) |
 | orderfree-comb | 16/16 | 16/16 | 16/16 | 1/16 (11MO 4TO) | 16/16 | 16/16 | 1/16 (12MO 3TO) | 5/16 (9MO 2TO) | 12/16 (4MO) |
-| orderfree-sep | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 |
+| orderfree-sep | 13/16 (3MO) | 14/16 (2MO) | 12/16 (2MO 2TO) | 1/16 (13MO 2TO) | 16/16 | 12/16 (1MO 3TO) | 1/16 (9MO 6TO) | 1/16 (9MO 6TO) | 1/16 (8MO 7TO) |
 
 ## Search effort on tasks every listed config solved (per model)
 
@@ -213,26 +213,25 @@ Geometric mean of search time and expansions over the tasks solved by all config
 | wastar3-ff | 0.00s | 16 | 61 | 1.00 (n=10, max 1.00) |
 | lama-first | 0.00s | 19 | 62 | 1.01 (n=10, max 1.12) |
 
-**orderfree-sep / satisficing / l1** (17 common tasks; left out for low coverage: gbfs-cg)
+**orderfree-sep / satisficing / l1** (18 common tasks; left out for low coverage: gbfs-cg)
 
 | config | search time (gmean) | expanded (gmean) | peak mem MB (max) | cost / opt |
 |---|---|---|---|---|
-| gbfs-ff | 0.97s | 22 | 175 | 1.02 (n=16, max 1.22) |
-| gbfs-add | 0.92s | 21 | 142 | 1.01 (n=16, max 1.22) |
-| gbfs-cea | 1.13s | 21 | 188 | 1.01 (n=16, max 1.22) |
-| wastar3-ff | 0.95s | 22 | 177 | 1.01 (n=16, max 1.22) |
-| lama-first | 1.23s | 29 | 158 | 1.03 (n=16, max 1.50) |
+| gbfs-ff | 1.01s | 23 | 175 | 1.02 (n=17, max 1.22) |
+| gbfs-add | 0.96s | 22 | 142 | 1.01 (n=17, max 1.22) |
+| gbfs-cea | 1.17s | 21 | 188 | 1.01 (n=17, max 1.22) |
+| wastar3-ff | 0.99s | 23 | 177 | 1.01 (n=17, max 1.22) |
+| lama-first | 1.29s | 30 | 158 | 1.03 (n=17, max 1.50) |
 
-**orderfree-sep / satisficing / other** (1 common tasks; left out for low coverage: none)
+**orderfree-sep / satisficing / other** (12 common tasks; left out for low coverage: gbfs-cg)
 
 | config | search time (gmean) | expanded (gmean) | peak mem MB (max) | cost / opt |
 |---|---|---|---|---|
-| gbfs-ff | 0.17s | 5 | 104 | 1.00 (n=1, max 1.00) |
-| gbfs-add | 0.16s | 5 | 102 | 1.00 (n=1, max 1.00) |
-| gbfs-cea | 0.32s | 7 | 144 | 1.00 (n=1, max 1.00) |
-| gbfs-cg | 2.66s | 81 | 2266 | 1.00 (n=1, max 1.00) |
-| wastar3-ff | 0.17s | 5 | 100 | 1.00 (n=1, max 1.00) |
-| lama-first | 0.20s | 6 | 96 | 1.00 (n=1, max 1.00) |
+| gbfs-ff | 1.69s | 52 | 2162 | 1.02 (n=11, max 1.24) |
+| gbfs-add | 1.35s | 46 | 472 | 1.01 (n=11, max 1.12) |
+| gbfs-cea | 1.99s | 48 | 413 | 1.01 (n=11, max 1.08) |
+| wastar3-ff | 1.76s | 59 | 1817 | 1.01 (n=11, max 1.08) |
+| lama-first | 1.87s | 65 | 429 | 1.04 (n=11, max 1.44) |
 
 **orderfree-sep / optimal / small** (10 common tasks; left out for low coverage: none)
 
@@ -276,8 +275,8 @@ Geometric mean of search time and expansions over the tasks solved by all config
 | orderfree-comb | l1 | 24 | 8.9 / 9.9 | 23k / 23k | 0 |
 | orderfree-comb | other | 18 | 6.6 / 9.7 | 18k / 24k | 0 |
 | orderfree-sep | small | 12 | 0.3 / 2.3 | 1806 / 15k | 0 |
-| orderfree-sep | l1 | 17 | 5.5 / 6.0 | 30k / 30k | 0 |
-| orderfree-sep | other | 1 | 6.3 / 6.3 | 32k / 32k | 0 |
+| orderfree-sep | l1 | 24 | 5.6 / 6.0 | 30k / 30k | 0 |
+| orderfree-sep | other | 18 | 6.3 / 6.7 | 32k / 33k | 0 |
 
 ## Per-problem detail (search time, cost)
 
@@ -452,16 +451,40 @@ Geometric mean of search time and expansions over the tasks solved by all config
 | L01 s003 t017 h1 | 2.04s [34] | 2.05s [34] | 2.43s [34] | MO | 1.99s [34] | 2.91s [34] | MO | MO | MO |
 | L01 s012 t010 h2 | 0.63s [10] | 0.64s [10] | 0.80s [10] | MO | 0.64s [10] | 0.89s [10] | MO | 187s [10] | 108s [10] |
 | L01 s013 t018 h2 | 1.13s [19] | 1.14s [19] | 1.27s [19] | MO | 1.12s [19] | 1.52s [19] | MO | MO | MO |
+| L01 s009 t017 h1 | MO | MO | MO | MO | TO | MO | MO | TO | TO |
 | L01 s010 t008 h2 | 1.50s [28] | 1.48s [28] | 1.94s [28] | MO | 1.52s [28] | 2.20s [28] | MO | TO | MO |
 | L01 s002 t013 h1 | 5.81s [57] | 3.63s [55] | 4.46s [55] | MO | 5.93s [55] | 4.73s [57] | MO | MO | MO |
+| L01 s005 t014 h1 | MO | MO | MO | MO | TO | MO | MO | TO | TO |
 | L01 s008 t011 h1 | 2.26s [41] | 2.29s [41] | 3.03s [41] | MO | 2.30s [41] | 3.49s [41] | MO | MO | MO |
+| L01 s001 t016 h1 | MO | MO | MO | MO | MO | MO | TO | TO | MO |
 | L01 s017 t013 h2 | 1.05s [16] | 0.96s [16] | 1.21s [16] | MO | 0.98s [16] | 1.41s [16] | TO | MO | TO |
 | L01 s011 t010 h2 | 1.03s [14] | 1.08s [14] | 1.13s [14] | MO | 0.95s [14] | 1.55s [14] | MO | TO | MO |
 | L01 s018 t002 h2 | 3.69s [58] | 3.26s [60] | 3.82s [60] | MO | 3.82s [58] | 4.94s [60] | MO | TO | MO |
+| L01 s012 t001 h2 | 1.90s [34] | 1.89s [34] | 2.31s [34] | MO | 1.89s [34] | 2.70s [34] | MO | TO | TO |
 | L01 s013 t014 h2 | 0.86s [14] | 0.90s [14] | 1.03s [14] | MO | 0.85s [14] | 1.16s [14] | MO | TO | MO |
+| L01 s016 t009 h2 | TO | MO | MO | MO | TO | MO | MO | MO | TO |
+| L01 s014 t011 h2 | TO | MO | TO | MO | TO | MO | MO | MO | MO |
+| L01 s016 t002 h2 | TO | MO | MO | MO | TO | MO | MO | MO | TO |
 
 ### orderfree-sep / other
 
 | problem | gbfs-ff | gbfs-add | gbfs-cea | gbfs-cg | wastar3-ff | lama-first | lazy-astar-blind | lazy-astar-hmax | lazy-astar-hmax-tb |
 |---|---|---|---|---|---|---|---|---|---|
 | L02 t007 | 0.17s [4] | 0.16s [4] | 0.32s [4] | 2.66s [4] | 0.17s [4] | 0.20s [4] | 2.66s [4] | 1.93s [4] | 1.02s [4] |
+| L07 t001 | 1.58s [33] | 1.58s [33] | 2.01s [33] | MO | 1.58s [33] | 2.54s [33] | MO | MO | MO |
+| L03 t018 | 6.11s [31] | 9.85s [28] | 12s [27] | MO | 20s [27] | 3.81s [36] | TO | TO | MO |
+| L08 t001 | MO | MO | TO | MO | 79s [30] | MO | TO | TO | TO |
+| L06 t005 | 0.27s [24] | 0.09s [24] | 0.25s [24] | TO | 0.09s [24] | 0.12s [24] | MO | MO | TO |
+| L06 t002 | 0.10s [25] | 0.10s [25] | 0.26s [25] | TO | 0.09s [25] | 0.12s [25] | MO | MO | TO |
+| L02 t005 | 2.34s [29] | 2.68s [29] | 5.37s [29] | MO | 3.93s [29] | 13s [29] | TO | TO | MO |
+| L11 t115 | MO | MO | MO | MO | TO | TO | TO | TO | TO |
+| L08 t003 | 1.31s [25] | 1.34s [25] | 1.71s [25] | MO | 1.30s [25] | 1.82s [25] | MO | MO | MO |
+| L11 t168 | MO | MO | MO | MO | TO | TO | TO | TO | TO |
+| L07 t008 | 2.28s [41] | 2.28s [41] | 2.90s [41] | MO | 2.36s [41] | 3.53s [41] | MO | MO | MO |
+| L09 t005 | 1.48s [24] | 1.46s [24] | 1.85s [24] | MO | 1.50s [24] | 2.08s [24] | MO | MO | MO |
+| L09 t003 | 1.32s [23] | 1.31s [23] | 1.66s [23] | MO | 1.34s [23] | 1.97s [23] | MO | MO | MO |
+| L03 t002 | 156s [30] | 29s [34] | 24s [31] | MO | 155s [30] | 25s [43] | MO | MO | MO |
+| L13 t006 | 5.95s [34] | 3.63s [34] | 4.15s [34] | MO | 5.55s [36] | 7.49s [34] | MO | MO | TO |
+| L14 t006 | MO | 43s [91] | TO | MO | 180s [81] | TO | TO | TO | TO |
+| L14 t016 | MO | 43s [104] | MO | MO | 189s [94] | TO | TO | TO | TO |
+| L13 t003 | 104s [65] | MO | MO | MO | 264s [62] | TO | TO | TO | TO |
