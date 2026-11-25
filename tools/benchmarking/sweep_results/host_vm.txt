@@ -3,4 +3,4 @@ cpus=4
 ram_gb=16
 cpu=Intel(R) Xeon(R) Processor @ 2.10GHz (groups A, C and the first 41 group-B jobs, until a container restart 2026-11-25 ~00:45 UTC); Intel(R) Xeon(R) Processor @ 2.30GHz (remaining group-B jobs)
 platform=Linux-6.18.44-fc-v819-x86_64-with-glibc2.39, then Linux-6.18.44-fc-v880-x86_64-with-glibc2.39
-run[results_vm.csv]=jobs=4 timeout=300s mem=3G mem_limit=rlimit (FD driver) fd=upstream fast-downward release-24.06.1 (downward@1eef26b) classic configs only
+run[results_vm.csv]=jobs=4 timeout=300s mem=3G mem_limit=rlimit (FD driver) fd=upstream fast-downward release-24.06.1 (downward@1eef26b) classic configs only domains=a9f6ad1
