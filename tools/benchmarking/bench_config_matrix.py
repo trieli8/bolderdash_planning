@@ -596,7 +596,7 @@ def discover_domains(
             raise ValueError("config.domains must be a non-empty list when provided.")
         paths = [resolve_path(str(x), config_dir=config_dir) for x in raw]
     else:
-        glob_pattern = str(config.get("domains_glob") or "pddl/test_domains/domain*.pddl")
+        glob_pattern = str(config.get("domains_glob") or "pddl/test_domains_target/domain*.pddl")
         pattern_path = Path(glob_pattern)
         if pattern_path.is_absolute():
             paths = sorted(pattern_path.parent.glob(pattern_path.name))
@@ -617,6 +617,9 @@ def discover_domains(
         else:
             kind = "classic"
         domain_gen = p.parent / f"problem_gen_{p.stem}.py"
+        if not domain_gen.exists() and p.stem.startswith("domain_classic_"):
+            # The classic wrappers drop "classic_", as in their `; variant:` header.
+            domain_gen = p.parent / f"problem_gen_domain_{p.stem[len('domain_classic_'):]}.py"
         info = DomainInfo(
             path=p,
             kind=kind,
@@ -1644,11 +1647,14 @@ def default_problem_gen_for_domain(domain: Path) -> Path:
         "domain_plus_relaxed.pddl": "problem_gen_plus_relaxed.py",
     }
 
-    source_name = read_source_name(domain)
-    if source_name and source_name in source_to_gen:
+    # A generated variant names its source in a `; source:` header; a source
+    # domain itself (e.g. pddl/domain_rowscan.pddl) has no header, so its own
+    # file name is looked up instead.
+    source_name = read_source_name(domain) or domain.name
+    if source_name in source_to_gen:
         return root / "pddl" / source_to_gen[source_name]
 
-    name = (source_name or domain.name).lower()
+    name = source_name.lower()
     if "scanner_separated_events_fluents_trimmed" in name:
         return root / "pddl" / "problem_gen_plus_scanner_separated_events_fluents_trimmed.py"
     if "scanner_separated_events_fluents" in name:
@@ -1659,6 +1665,11 @@ def default_problem_gen_for_domain(domain: Path) -> Path:
         return root / "pddl" / "problem_gen_plus_relaxed.py"
     if "plus" in name:
         return root / "pddl" / "problem_gen_plus_from_domain.py"
+    # Last resort, by name: the generators of the pre-rewrite models (domain.pddl /
+    # domain_scanner_separated.pddl, no longer in the tree). Their problems lack
+    # the rounded-wall / flat-wall facts of the current models, which are matched
+    # earlier: a sibling problem_gen_<stem>.py (pick_problem_gen) or the
+    # mapping above.
     if "scanner_separated" in name or "scaner_separated" in name:
         return root / "pddl" / "problem_gen_scanner_separated.py"
     return root / "pddl" / "problem_gen.py"
@@ -1689,8 +1700,10 @@ def generate_problem_from_level(
 
     tmpdir = tempfile.TemporaryDirectory(prefix="bench_config_matrix_problem_")
     out_path = Path(tmpdir.name) / f"{problem_name}.pddl"
-    cmd = [sys.executable, str(gen_py), str(level_path), "-p", problem_name]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    cmd = [sys.executable, str(gen_py.resolve()), str(level_path.resolve()), "-p", problem_name]
+    # Run inside the temp dir: older generators also write
+    # <problem_name>.pddl to their working directory.
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=tmpdir.name)
     if proc.returncode != 0:
         tmpdir.cleanup()
         detail = (proc.stderr or proc.stdout).strip()

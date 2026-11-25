@@ -2,7 +2,7 @@
   "timeout_sec": 300,
   "max_parallel_runs": 6,
   "random_seed": 1337,
-  "domains_glob": "pddl/test_domains/domain*.pddl",
+  "domains_glob": "pddl/test_domains_pre_target/domain*.pddl",
   "custom_fail_streak_limit": 1,
   "custom_levels_require_growth_past_size": "7x7",
   "custom_levels_run_last": true, 

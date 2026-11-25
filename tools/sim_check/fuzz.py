@@ -28,6 +28,7 @@ import random
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -192,8 +193,14 @@ def load_generator(domain: Path, explicit: Optional[Path] = None):
     if gen is None:
         raise FileNotFoundError(f"No problem generator next to {domain} (tried {[c.name for c in candidates]})")
 
+    gen = gen.resolve()
+
     def generate(level_text: str, name: str = "fuzz") -> str:
-        proc = subprocess.run([sys.executable, str(gen), level_text, "-p", name], capture_output=True, text=True)
+        # Run in a scratch dir: older generators also write <name>.pddl to
+        # their working directory.
+        with tempfile.TemporaryDirectory(prefix="fuzz_gen_") as td:
+            proc = subprocess.run([sys.executable, str(gen), level_text, "-p", name],
+                                  capture_output=True, text=True, cwd=td)
         if proc.returncode != 0:
             raise RuntimeError(f"generator failed: {proc.stderr.strip()}")
         return proc.stdout

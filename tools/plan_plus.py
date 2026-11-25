@@ -196,6 +196,9 @@ def select_problem_gen(domain: Path) -> Path:
     if "scanner_separated" in name:
         return root / "pddl" / "problem_gen_scanner_separated.py"
 
+    # Last resort: the classic generator of the pre-rewrite models (domain.pddl,
+    # no longer in the tree). Not a PDDL+ generator; pass --problem-gen for
+    # anything the rules above do not cover.
     return root / "pddl" / "problem_gen.py"
 
 
@@ -207,8 +210,10 @@ def generate_problem_from_level(level_txt: Path, problem_name: str, domain: Path
     tmpdir = tempfile.TemporaryDirectory(prefix="gen_plus_problem_")
     out_path = Path(tmpdir.name) / f"{problem_name}.pddl"
 
-    cmd = [sys.executable, str(gen_py), str(level_txt), "-p", problem_name]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    cmd = [sys.executable, str(gen_py.resolve()), str(level_txt.resolve()), "-p", problem_name]
+    # Run inside the temp dir: the PDDL+ generators also write
+    # <problem_name>.pddl to their working directory.
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=tmpdir.name)
     if proc.returncode != 0:
         tmpdir.cleanup()
         raise RuntimeError(f"{gen_py.name} failed (rc={proc.returncode}): {proc.stderr or proc.stdout}")

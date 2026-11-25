@@ -5,7 +5,7 @@ This folder contains the generated matrix requested from:
 - `{domain, domain_FA, domain_plus}`
 - `{scanner, non-scanner}`
 - `{combined, separated}`
-- `events/actions` only for `domain_plus`
+- `events/actions` only for `domain_plus` (only the `events` files are present, see below)
 
 ## Source Mapping
 
@@ -28,21 +28,29 @@ This folder contains the generated matrix requested from:
   The problem generator is picked through the `; source:` header
   (`problem_gen_common.py`, `tools/plan.py`, `tools/benchmarking/bench_config_matrix.py`).
 
-- `domain_plus_*_actions`
-  - `scanner_combined_actions` -> `pddl/domain_scanner_combined.pddl`
-  - `scanner_separated_actions` -> `pddl/domain_scanner_separated.pddl`
-  - `non-scanner_combined_actions` -> `pddl/domain_merged.pddl`
-  - `non-scanner_separated_actions` -> `pddl/domain.pddl`
+- `domain_plus_*_events` (kept from the earlier matrix; not written by
+  `make_target_variants.py` and not part of the engine-conformance rewrite below)
+  - `scanner_{combined,separated}_events`: `; source:` header names
+    `domain_plus_scanner_separated_events.pddl`; problems from
+    `pddl/problem_gen_plus_scanner_separated.py`
+  - `non-scanner_{combined,separated}_events`: `; source:` header names
+    `domain_plus_from_domain.pddl`; problems from
+    `pddl/problem_gen_plus_from_domain.py`
 
-- `domain_plus_*_events`
-  - `scanner_combined_events` -> `pddl/domain_plus_scanner_separated_events.pddl`
-  - `scanner_separated_events` -> `pddl/domain_plus_scanner_separated_events.pddl`
-  - `non-scanner_combined_events` -> `pddl/domain_plus_from_domain.pddl`
-  - `non-scanner_separated_events` -> `pddl/domain_plus_from_domain.pddl`
+  Those source files are no longer in the tree (deleted in commit `ed4a61e`;
+  `git show ed4a61e^:pddl/<name>` prints one). The header name is still what
+  selects the problem generator.
+
+- `domain_plus_*_actions`: no domain files in this folder. The four
+  `problem_gen_domain_plus_*_actions.py` wrappers are left over from the earlier
+  matrix and exit with "missing domain file". Those variants were built from
+  `domain_scanner_combined.pddl`, `domain_scanner_separated.pddl`,
+  `domain_merged.pddl` and `domain.pddl`, also deleted in `ed4a61e`.
 
 ## Validation
 
-All 16 files were validated to solve `pddl/level_5_5.txt` by:
+All 16 files of the earlier matrix (including the four `domain_plus_*_actions`
+files, since removed) were validated to solve `pddl/level_5_5.txt` by:
 
 - generating a domain-matched problem with the appropriate generator script
 - running `tools/plan.py` (`fd`) for non-event files
@@ -59,12 +67,15 @@ replayed in the engine), not re-run through Fast Downward.
 
 Each domain variant has a matching generator script:
 
-- `pddl/test_domains/problem_gen_<domain-file-stem>.py`
+- `pddl/test_domains_target/problem_gen_<domain-file-stem>.py`; the classic files
+  drop `classic_`, as in their `; variant:` header
+  (`domain_classic_scanner_combined.pddl` ->
+  `pddl/test_domains_target/problem_gen_domain_scanner_combined.py`)
 
 Examples:
 
-- `python pddl/test_domains/problem_gen_domain_FA_scanner_combined.py pddl/level_5_5.txt -p test_case`
-- `python pddl/test_domains/problem_gen_domain_plus_scanner_combined_events.py pddl/level_5_5.txt -p test_case`
+- `python pddl/test_domains_target/problem_gen_domain_FA_scanner_combined.py pddl/level_5_5.txt -p test_case`
+- `python pddl/test_domains_target/problem_gen_domain_plus_scanner_combined_events.py pddl/level_5_5.txt -p test_case`
 
 Behavior:
 
@@ -180,9 +191,9 @@ An agent killed by a falling object does not stop the physics (it does not
 depend on `agent-alive`), so such a tick still ends in a unique state; no
 `move_*` action is applicable afterwards.
 
-### Problem size (20x38 benchmark level `test_problems/h1/bd_level_01_start_gem_001_target_gem_005.txt`)
+### Problem size (20x38 benchmark level `pddl/test_problems/h1/bd_level_01_start_gem_001_target_gem_005.txt`)
 
-Fast Downward-style operator counts from `tools/sim_check/pddl_exec.task_stats`
+Fast Downward-style operator counts from `task_stats()` in `tools/sim_check/pddl_exec.py`
 (after relaxed reachability and disjunction splitting):
 
 | variant | operators |
