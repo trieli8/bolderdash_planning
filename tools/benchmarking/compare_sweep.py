@@ -32,8 +32,7 @@ from analyze_sweep import (EXHAUSTED, MODELS, OPT_CFGS, SAT_CFGS, SET_LABEL, SET
                            fmt_n, fmt_t, fnum, gmean, load, short_problem)
 
 ROOT = Path(__file__).resolve().parents[2]
-FA_AWARE = ["gbfs-ff", "gbfs-add", "gbfs-cea", "gbfs-cg", "wastar3-ff", "lama-first",
-            "lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb"]
+from fd_sweep import FA_AWARE  # noqa: E402  (the configs fd_sweep --fa runs)
 
 
 def parse_sel(s: str):
@@ -230,7 +229,7 @@ def main() -> int:
         + " | cost = known optimum | cost ≠ |")
     out("|---|---|" + "---|" * (len([s for s in SETS if s in probs]) + 2))
     for m in models:
-        for c in ("lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb"):
+        for c in [c for c in FA_AWARE if c in OPT_CFGS]:
             cells = [cov_cell(FA, m, c, [p for p in probs[s] if p not in nop]) for s in SETS if s in probs]
             if not any(cells):
                 continue
