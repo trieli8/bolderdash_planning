@@ -82,9 +82,10 @@ def main() -> int:
     tm_sel = parse_sel(opts["--timing"]) if "--timing" in opts else None
     speed = float(opts["--speed"]) if "--speed" in opts else None
     limit = 300 / speed if speed else None
-    rows = load(d)
-    FA, CL = select(rows, fa_sel), select(rows, cl_sel)
-    TM = select(rows, tm_sel) if tm_sel else CL
+    # load each side with its own host filter: load() keeps one row per (variant, model, problem,
+    # config) across hosts, so filtering hosts after a joint load would drop that host's failures
+    FA, CL = select(load(d, fa_sel[1]), fa_sel), select(load(d, cl_sel[1]), cl_sel)
+    TM = select(load(d, tm_sel[1]), tm_sel) if tm_sel else CL
     if not FA or not CL:
         print(f"no rows for {label(fa_sel) if not FA else label(cl_sel)}")
         return 1

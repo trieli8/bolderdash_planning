@@ -1,10 +1,10 @@
 # Fast Downward settings sweep
 
-Variant **inv0** (translator options; +fa = forced-action fork). Other variants in the data: inv0+fa (pick with --variant=NAME).
+Variant **inv0** (translator options; +fa = forced-action fork). Other variants in the data: none (pick with --variant=NAME).
 
 1392 runs from host(s) vm; models: scan-comb, scan-sep, orderfree-comb, orderfree-sep.
 
-- **vm**: host=vm; cpus=4; ram_gb=16; cpu=Intel(R) Xeon(R) Processor @ 2.10GHz (groups A, C and the first 41 group-B jobs, until a container restart 2026-11-25 ~00:45 UTC); Intel(R) Xeon(R) Processor @ 2.30GHz (remaining group-B jobs); platform=Linux-6.18.44-fc-v819-x86_64-with-glibc2.39, then Linux-6.18.44-fc-v880-x86_64-with-glibc2.39; run[results_vm.csv]=jobs=4 timeout=300s mem=3G mem_limit=rlimit (FD driver) fd=upstream fast-downward release-24.06.1 (downward@1eef26b) classic configs only
+- **vm**: host=vm; cpus=4; ram_gb=16; cpu=Intel(R) Xeon(R) Processor @ 2.10GHz (groups A, C and the first 41 group-B jobs, until a container restart 2026-11-25 ~00:45 UTC); Intel(R) Xeon(R) Processor @ 2.30GHz (remaining group-B jobs); platform=Linux-6.18.44-fc-v819-x86_64-with-glibc2.39, then Linux-6.18.44-fc-v880-x86_64-with-glibc2.39; run[results_vm.csv]=jobs=4 timeout=300s mem=3G mem_limit=rlimit (FD driver) fd=upstream fast-downward release-24.06.1 (downward@1eef26b) classic configs only domains=a9f6ad1
 
 Problems with no plan (search space exhausted; [models that proved it]), excluded from coverage for all models: L11 t115 [scan-comb], L11 t168 [scan-comb], testing_level_2 [scan-comb,scan-sep,orderfree-comb], testing_level_3 [scan-comb,scan-sep,orderfree-comb]
 

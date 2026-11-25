@@ -1,16 +1,16 @@
 # Forced-action vs classic Fast Downward sweep
 
 - FA side: **inv0+fa** (1944 runs)
-- classic side: **inv0** (1392 runs)
-- no same-machine classic baseline: time ratios compare different machines
+- classic side: **inv0@vm** (1392 runs)
+- classic timing baseline: **inv0@m5pro** (1200 runs, same machine as FA)
 - translate time classic / FA side (same tasks, 96 problems): median 1.86x (range 1.58-3.53), a rough machine speed ratio
 - `[k ≤150s]` in an FA coverage cell: solves within 300/2 s of search time (the classic machine's limit scaled by --speed); shown only where it differs
-- **m5pro**: host=m5pro; cpus=18; ram_gb=48; cpu=Apple M5 Pro; platform=macOS-26.5.2-arm64-arm-64bit-Mach-O; run[results_m5pro_fa.csv]=jobs=12 timeout=300s mem=3G mem_limit=rss-watchdog (macOS: FD cannot set memory limits) fd=fast-downward@3afd34949 + local changes (src/search/utils/state_dump.cc, src/search/utils/state_dump.h) FD_STATE_DUMP=0
-- **vm**: host=vm; cpus=4; ram_gb=16; cpu=Intel(R) Xeon(R) Processor @ 2.10GHz (groups A, C and the first 41 group-B jobs, until a container restart 2026-11-25 ~00:45 UTC); Intel(R) Xeon(R) Processor @ 2.30GHz (remaining group-B jobs); platform=Linux-6.18.44-fc-v819-x86_64-with-glibc2.39, then Linux-6.18.44-fc-v880-x86_64-with-glibc2.39; run[results_vm.csv]=jobs=4 timeout=300s mem=3G mem_limit=rlimit (FD driver) fd=upstream fast-downward release-24.06.1 (downward@1eef26b) classic configs only
+- **m5pro**: host=m5pro; cpus=18; ram_gb=48; cpu=Apple M5 Pro; platform=macOS-26.5.2-arm64-arm-64bit-Mach-O; run[results_m5pro.csv]=jobs=12 timeout=300s mem=3G mem_limit=rss-watchdog (macOS: FD cannot set memory limits) fd=fast-downward@3afd34949 + local changes (src/search/utils/state_dump.cc, src/search/utils/state_dump.h) FD_STATE_DUMP=0 domains=a9f6ad1; run[results_m5pro_fa.csv]=jobs=12 timeout=300s mem=3G mem_limit=rss-watchdog (macOS: FD cannot set memory limits) fd=fast-downward@3afd34949 + local changes (src/search/utils/state_dump.cc, src/search/utils/state_dump.h) FD_STATE_DUMP=0 domains=a9f6ad1
+- **vm**: host=vm; cpus=4; ram_gb=16; cpu=Intel(R) Xeon(R) Processor @ 2.10GHz (groups A, C and the first 41 group-B jobs, until a container restart 2026-11-25 ~00:45 UTC); Intel(R) Xeon(R) Processor @ 2.30GHz (remaining group-B jobs); platform=Linux-6.18.44-fc-v819-x86_64-with-glibc2.39, then Linux-6.18.44-fc-v880-x86_64-with-glibc2.39; run[results_vm.csv]=jobs=4 timeout=300s mem=3G mem_limit=rlimit (FD driver) fd=upstream fast-downward release-24.06.1 (downward@1eef26b) classic configs only domains=a9f6ad1
 
 ## No-plan problems and disagreements
 
-Problems some search exhausted (no plan), excluded from coverage: L11 t115 [FA/orderfree-comb, FA/scan-comb, classic/scan-comb], L11 t168 [FA/orderfree-comb, FA/scan-comb, classic/scan-comb], testing_level_2 [FA/orderfree-comb, FA/orderfree-sep, FA/scan-comb, FA/scan-sep, classic/orderfree-comb, classic/scan-comb, classic/scan-sep], testing_level_3 [FA/orderfree-comb, FA/orderfree-sep, FA/scan-comb, FA/scan-sep, classic/orderfree-comb, classic/scan-comb, classic/scan-sep]
+Problems some search exhausted (no plan), excluded from coverage: L11 t115 [FA/orderfree-comb, FA/scan-comb, classic-base/scan-comb, classic/scan-comb], L11 t168 [FA/orderfree-comb, FA/scan-comb, classic-base/scan-comb, classic/scan-comb], testing_level_2 [FA/orderfree-comb, FA/orderfree-sep, FA/scan-comb, FA/scan-sep, classic-base/orderfree-comb, classic-base/scan-comb, classic-base/scan-sep, classic/orderfree-comb, classic/scan-comb, classic/scan-sep], testing_level_3 [FA/orderfree-comb, FA/orderfree-sep, FA/scan-comb, FA/scan-sep, classic-base/orderfree-comb, classic-base/scan-comb, classic-base/scan-sep, classic/orderfree-comb, classic/scan-comb, classic/scan-sep]
 
 No problem is solved by one model/side and proved plan-less by another.
 
@@ -100,64 +100,82 @@ Cells are `classic → FA`; a config only on one side shows `–` on the other. 
 
 ## Search effort on tasks solved by both (same config)
 
-Geometric means over the tasks the config solved on both sides. Times: classic and FA come from different machines (not comparable in absolute terms). Classic expansions include every physics step; FA expansions are agent decision states only, FA evaluated includes the forced intermediate states.
+Geometric means over the tasks the config solved on both sides. Times: classic from the same-machine baseline. Classic expansions include every physics step; FA expansions are agent decision states only, FA evaluated includes the forced intermediate states.
 
 
 **scan-comb**
 
 | config | set | tasks | classic time | FA time | speed-up | classic expanded | FA expanded | classic evaluated | FA evaluated |
 |---|---|---|---|---|---|---|---|---|---|
-| gbfs-ff | small | 10 | 0.05s | 0.00s | 18x | 444 | 16 | 446 | 680 |
-| gbfs-ff | large | 38 | 19s | 0.30s | 64x | 5358 | 32 | 5360 | 7020 |
-| gbfs-add | small | 10 | 0.06s | 0.00s | 20x | 444 | 16 | 446 | 680 |
-| gbfs-add | large | 40 | 23s | 0.35s | 65x | 6501 | 38 | 6503 | 8309 |
-| gbfs-cea | small | 10 | 0.22s | 0.00s | 52x | 635 | 16 | 637 | 678 |
-| gbfs-cea | large | 30 | 124s | 0.60s | 205x | 4637 | 25 | 4638 | 5845 |
-| gbfs-cg | small | 10 | 0.20s | 0.01s | 19x | 3625 | 67 | 3628 | 3848 |
-| gbfs-cg | large | 4 | 121s | 1.12s | 108x | 23k | 53 | 23k | 31k |
-| wastar3-ff | small | 10 | 0.05s | 0.00s | 17x | 444 | 16 | 446 | 708 |
-| wastar3-ff | large | 38 | 20s | 0.32s | 63x | 5524 | 33 | 5525 | 7173 |
-| lama-first | small | 10 | 0.06s | 0.00s | 21x | 745 | 18 | 747 | 821 |
-| lama-first | large | 36 | 12s | 0.45s | 26x | 5750 | 44 | 5751 | 13k |
+| gbfs-ff | small | 10 | 0.03s | 0.00s | 10x | 621 | 16 | 623 | 680 |
+| gbfs-ff | large | 38 | 24s | 0.30s | 79x | 5411 | 32 | 5413 | 7020 |
+| gbfs-add | small | 10 | 0.03s | 0.00s | 10x | 621 | 16 | 623 | 680 |
+| gbfs-add | large | 39 | 27s | 0.33s | 80x | 6185 | 36 | 6186 | 7815 |
+| gbfs-cea | small | 10 | 0.07s | 0.00s | 16x | 636 | 16 | 637 | 678 |
+| gbfs-cea | large | 36 | 126s | 0.69s | 184x | 5121 | 29 | 5122 | 6296 |
+| gbfs-cg | small | 10 | 0.07s | 0.01s | 6x | 3624 | 67 | 3626 | 3848 |
+| gbfs-cg | large | 4 | 106s | 1.12s | 95x | 23k | 53 | 23k | 31k |
+| wastar3-ff | small | 10 | 0.04s | 0.00s | 11x | 635 | 16 | 637 | 708 |
+| wastar3-ff | large | 38 | 24s | 0.32s | 76x | 5718 | 33 | 5719 | 7173 |
+| lama-first | small | 10 | 0.03s | 0.00s | 12x | 1102 | 18 | 1104 | 821 |
+| lama-first | large | 14 | 14s | 0.25s | 56x | 11k | 21 | 11k | 7851 |
+| lazy-astar-blind | small | 10 | 0.01s | 0.01s | 1x | 4392 | 74 | 4395 | 4310 |
+| lazy-astar-blind | large | 7 | 8.35s | 3.66s | 2x | 164k | 377 | 164k | 124k |
+| lazy-astar-hmax | small | 10 | 0.03s | 0.01s | 5x | 1261 | 46 | 1263 | 2351 |
+| lazy-astar-hmax | large | 17 | 25s | 1.75s | 14x | 17k | 198 | 17k | 48k |
+| lazy-astar-hmax-tb | small | 10 | 0.02s | 0.00s | 5x | 724 | 24 | 726 | 1086 |
+| lazy-astar-hmax-tb | large | 31 | 14s | 0.39s | 35x | 7071 | 44 | 7072 | 11k |
 
 **scan-sep**
 
 | config | set | tasks | classic time | FA time | speed-up | classic expanded | FA expanded | classic evaluated | FA evaluated |
 |---|---|---|---|---|---|---|---|---|---|
-| gbfs-ff | small | 10 | 0.08s | 0.00s | 24x | 906 | 15 | 908 | 1288 |
-| gbfs-ff | large | 32 | 86s | 0.76s | 113x | 27k | 28 | 27k | 35k |
-| gbfs-add | small | 10 | 0.07s | 0.00s | 21x | 906 | 15 | 908 | 1288 |
-| gbfs-add | large | 31 | 80s | 0.73s | 110x | 26k | 27 | 26k | 34k |
-| gbfs-cea | small | 10 | 0.33s | 0.01s | 56x | 1172 | 15 | 1174 | 1274 |
-| gbfs-cea | large | 11 | 160s | 0.43s | 372x | 10k | 12 | 10k | 14k |
-| gbfs-cg | small | 10 | 0.12s | 0.01s | 15x | 3479 | 44 | 3481 | 4279 |
-| gbfs-cg | large | 4 | 46s | 1.08s | 43x | 46k | 41 | 46k | 51k |
-| wastar3-ff | small | 10 | 0.08s | 0.00s | 23x | 906 | 16 | 908 | 1336 |
-| wastar3-ff | large | 31 | 84s | 0.72s | 116x | 26k | 27 | 26k | 34k |
-| lama-first | small | 10 | 0.18s | 0.00s | 48x | 2683 | 19 | 2685 | 1617 |
-| lama-first | large | 5 | 31s | 0.18s | 168x | 16k | 7 | 16k | 8776 |
+| gbfs-ff | small | 10 | 0.06s | 0.00s | 19x | 1128 | 15 | 1130 | 1288 |
+| gbfs-ff | large | 31 | 86s | 0.74s | 116x | 26k | 28 | 26k | 34k |
+| gbfs-add | small | 10 | 0.07s | 0.00s | 19x | 1128 | 15 | 1129 | 1288 |
+| gbfs-add | large | 30 | 83s | 0.71s | 117x | 25k | 26 | 25k | 33k |
+| gbfs-cea | small | 10 | 0.25s | 0.01s | 42x | 1173 | 15 | 1174 | 1274 |
+| gbfs-cea | large | 10 | 174s | 0.40s | 438x | 9571 | 11 | 9572 | 13k |
+| gbfs-cg | small | 10 | 0.06s | 0.01s | 7x | 3464 | 44 | 3466 | 4279 |
+| gbfs-cg | large | 5 | 31s | 2.20s | 14x | 80k | 83 | 80k | 104k |
+| wastar3-ff | small | 10 | 0.07s | 0.00s | 21x | 1199 | 16 | 1201 | 1336 |
+| wastar3-ff | large | 28 | 78s | 0.65s | 119x | 23k | 24 | 23k | 30k |
+| lama-first | small | 10 | 0.17s | 0.00s | 45x | 4486 | 19 | 4488 | 1617 |
+| lama-first | large | 5 | 28s | 0.18s | 153x | 20k | 7 | 20k | 8776 |
+| lazy-astar-blind | small | 10 | 0.02s | 0.01s | 2x | 6210 | 63 | 6213 | 6212 |
+| lazy-astar-blind | large | 5 | 7.31s | 2.72s | 3x | 224k | 106 | 224k | 133k |
+| lazy-astar-hmax | small | 10 | 0.11s | 0.01s | 11x | 4052 | 55 | 4055 | 5172 |
+| lazy-astar-hmax | large | 4 | 43s | 1.02s | 42x | 31k | 38 | 31k | 48k |
+| lazy-astar-hmax-tb | small | 10 | 0.11s | 0.01s | 12x | 3957 | 50 | 3960 | 4679 |
+| lazy-astar-hmax-tb | large | 4 | 24s | 0.54s | 44x | 18k | 20 | 18k | 25k |
 
 **orderfree-comb**
 
 | config | set | tasks | classic time | FA time | speed-up | classic expanded | FA expanded | classic evaluated | FA evaluated |
 |---|---|---|---|---|---|---|---|---|---|
-| gbfs-ff | small | 9 | 0.02s | 0.00s | 10x | 241 | 16 | 244 | 125 |
-| gbfs-add | small | 9 | 0.02s | 0.00s | 10x | 241 | 16 | 244 | 125 |
-| gbfs-cea | small | 9 | 0.03s | 0.00s | 14x | 259 | 16 | 262 | 124 |
-| gbfs-cg | small | 9 | 0.05s | 0.00s | 12x | 1312 | 58 | 1318 | 489 |
-| wastar3-ff | small | 9 | 0.02s | 0.00s | 9x | 241 | 16 | 244 | 129 |
-| lama-first | small | 9 | 0.01s | 0.00s | 8x | 284 | 18 | 286 | 145 |
+| gbfs-ff | small | 9 | 0.02s | 0.00s | 10x | 319 | 16 | 322 | 125 |
+| gbfs-add | small | 9 | 0.02s | 0.00s | 9x | 320 | 16 | 323 | 125 |
+| gbfs-cea | small | 9 | 0.02s | 0.00s | 10x | 259 | 16 | 262 | 124 |
+| gbfs-cg | small | 9 | 0.04s | 0.00s | 8x | 1314 | 58 | 1320 | 489 |
+| wastar3-ff | small | 9 | 0.02s | 0.00s | 9x | 334 | 16 | 337 | 129 |
+| lama-first | small | 9 | 0.01s | 0.00s | 9x | 383 | 18 | 385 | 145 |
+| lazy-astar-blind | small | 9 | 0.01s | 0.00s | 4x | 1454 | 61 | 1460 | 521 |
+| lazy-astar-hmax | small | 9 | 0.02s | 0.00s | 7x | 730 | 44 | 734 | 357 |
+| lazy-astar-hmax-tb | small | 9 | 0.02s | 0.00s | 7x | 398 | 23 | 402 | 188 |
 
 **orderfree-sep**
 
 | config | set | tasks | classic time | FA time | speed-up | classic expanded | FA expanded | classic evaluated | FA evaluated |
 |---|---|---|---|---|---|---|---|---|---|
-| gbfs-ff | small | 8 | 0.01s | 0.00s | 6x | 282 | 16 | 284 | 291 |
-| gbfs-add | small | 8 | 0.01s | 0.00s | 6x | 282 | 16 | 283 | 291 |
-| gbfs-cea | small | 8 | 0.03s | 0.00s | 11x | 303 | 16 | 304 | 290 |
-| gbfs-cg | small | 8 | 0.02s | 0.00s | 5x | 1000 | 44 | 1002 | 887 |
-| wastar3-ff | small | 8 | 0.01s | 0.00s | 6x | 282 | 17 | 284 | 302 |
-| lama-first | small | 8 | 0.02s | 0.00s | 10x | 498 | 20 | 500 | 355 |
+| gbfs-ff | small | 8 | 0.01s | 0.00s | 6x | 345 | 16 | 347 | 291 |
+| gbfs-add | small | 8 | 0.01s | 0.00s | 6x | 353 | 16 | 355 | 291 |
+| gbfs-cea | small | 8 | 0.02s | 0.00s | 8x | 307 | 16 | 309 | 290 |
+| gbfs-cg | small | 8 | 0.01s | 0.00s | 4x | 1005 | 44 | 1007 | 887 |
+| wastar3-ff | small | 8 | 0.01s | 0.00s | 6x | 395 | 17 | 397 | 302 |
+| lama-first | small | 8 | 0.02s | 0.00s | 8x | 695 | 20 | 697 | 355 |
+| lazy-astar-blind | small | 8 | 0.01s | 0.01s | 2x | 1894 | 67 | 1898 | 1366 |
+| lazy-astar-hmax | small | 8 | 0.02s | 0.00s | 4x | 1008 | 52 | 1010 | 1002 |
+| lazy-astar-hmax-tb | small | 8 | 0.02s | 0.00s | 4x | 706 | 36 | 709 | 664 |
 
 ## FA optimal configs
 
