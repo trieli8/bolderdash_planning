@@ -6,7 +6,10 @@ tools/benchmarking/sweep_results/), so CSVs from several machines are merged.
 If the same (model, problem, config, variant) was run on more than one host,
 a solved row wins over an unsolved one and the first solved row is kept.
 
-  python3 tools/benchmarking/analyze_sweep.py [sweep_dir] [--variant=inv0|default|inv0+fa] > report.md
+  python3 tools/benchmarking/analyze_sweep.py [sweep_dir] [--variant=inv0|default|inv0+fa] [--hosts=h1,h2] > report.md
+
+--hosts keeps only the rows from those hosts (e.g. to compare search times
+measured on the same machine).
 
 Status meanings (from Fast Downward exit codes):
   solved, timeout, memout, unsolvable / incomplete (search space exhausted:
@@ -29,7 +32,7 @@ SHORT = {"scanner_combined": "scan-comb", "scanner_separated": "scan-sep",
          "non-scanner_combined": "orderfree-comb", "non-scanner_separated": "orderfree-sep"}
 MODELS = list(SHORT)
 SAT_CFGS = ["gbfs-ff", "eager-gbfs-ff", "gbfs-add", "gbfs-cea", "gbfs-cg", "wastar3-ff", "lama-first"]
-OPT_CFGS = ["astar-blind", "astar-hmax", "astar-lmcp", "astar-ms"]
+OPT_CFGS = ["astar-blind", "astar-hmax", "astar-lmcp", "astar-ms", "lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb"]
 CFGS = SAT_CFGS + OPT_CFGS
 SETS = ["small", "l1", "other"]
 SET_LABEL = {"small": "small (hand-made, 5x5..40x11)", "l1": "bd_level_01 20x38 (h1+h2)",
@@ -44,10 +47,12 @@ def fnum(x):
         return None
 
 
-def load(d: Path):
+def load(d: Path, hosts=None):
     rows = []
     for f in sorted(d.glob("results_*.csv")):
         for r in csv.DictReader(f.open()):
+            if hosts and r["host"] not in hosts:
+                continue
             r["_variant"] = (r.get("translator") or "inv0") + ("+fa" if "_fa" in f.stem else "")
             rows.append(r)
     best = {}
@@ -92,10 +97,11 @@ def gmean(xs):
 
 
 def main() -> int:
-    args = [a for a in sys.argv[1:] if not a.startswith("--variant=")]
+    args = [a for a in sys.argv[1:] if not a.startswith(("--variant=", "--hosts="))]
     want = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--variant=")), "inv0")
+    hosts = next((set(a.split("=", 1)[1].split(",")) for a in sys.argv[1:] if a.startswith("--hosts=")), None)
     d = Path(args[0]) if args else ROOT / "tools/benchmarking/sweep_results"
-    allrows = load(d)
+    allrows = load(d, hosts)
     variants = sorted({r["_variant"] for r in allrows})
     rows = [r for r in allrows if r["_variant"] == want]
     if not rows:

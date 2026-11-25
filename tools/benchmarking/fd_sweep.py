@@ -23,7 +23,8 @@ Groups (pick with --groups, split across machines with --shard i/N):
   A  scanner_combined: every problem, every config
   B  scanner_separated: every problem, every config
   C  both order-free models: small problems with every config, and the first
-     6 large problems with gbfs-ff and astar-hmax (to confirm the timeouts)
+     6 large problems with gbfs-ff and astar-hmax (to confirm the timeouts);
+     with --fa every problem with every FA_AWARE config
 
 Results are appended to <out>/results_<host>.csv; reruns skip rows already
 present, so an interrupted sweep can be resumed with the same command.
@@ -37,15 +38,38 @@ Examples:
   python3 tools/benchmarking/fd_sweep.py --fd ~/downward --groups B --shard 2/3
   # list jobs without running them
   python3 tools/benchmarking/fd_sweep.py --groups A,B,C --dry-run
+  # forced-action sweep, and a classic baseline with the same (lazy) configs on the same machine
+  python3 tools/benchmarking/fd_sweep.py --fd planners/fast-downward --fa --groups A,B,C
+  python3 tools/benchmarking/fd_sweep.py --fd planners/fast-downward --groups A,B,C \
+      --configs gbfs-ff,gbfs-add,gbfs-cea,gbfs-cg,wastar3-ff,lama-first,lazy-astar-blind,lazy-astar-hmax,lazy-astar-hmax-tb
 
 --fd is a Fast Downward checkout with a release build (./build.py). Without
 --fd, upstream release-24.06.1 is cloned and built into ~/.cache/fd_sweep.
 
 --fa runs the domain_FA_* files instead; that only makes sense with the
 forced-action fork (planners/fast-downward), and only its lazy searches
-(gbfs-ff, gbfs-add, gbfs-cea, gbfs-cg, wastar3-ff, lama-first) apply
-__FORCED__ actions automatically; the eager / A* configs treat them as
-ordinary actions.
+(FA_AWARE: gbfs-ff, gbfs-add, gbfs-cea, gbfs-cg, wastar3-ff, lama-first and
+the lazy A* configs lazy-astar-*) apply __FORCED__
+actions automatically. The eager / A* configs would treat them as ordinary
+actions and reproduce the classic runs, so --fa runs only the FA_AWARE configs.
+With --fa, group C runs every FA_AWARE config on every problem: forced
+semantics apply the order-free physics in one fixed order, so the classic
+interleaving blow-up that kept group C to 6 large problems does not apply.
+
+lazy-astar-blind / lazy-astar-hmax are lazy_wastar(w=1) with an admissible
+heuristic (reopening on), i.e. optimal; under --fa they are the fork's optimal
+setting (tools/plan.py --optimal uses lazy-astar-blind). lazy-astar-hmax-tb is
+the same lazy A* with hmax but breaks f ties on h, as astar() does.
+
+The fork logs a JSON line per search state for its GUI unless FD_STATE_DUMP=0;
+the sweep sets FD_STATE_DUMP=0 for every planner call (no effect on upstream FD).
+
+Memory limits: FD cannot set memory limits on macOS (RLIMIT_AS is not
+enforced there and the driver refuses --*-memory-limit). On macOS the sweep
+leaves the limit out and kills a translate/search process tree whose resident
+set size exceeds --mem instead (polled every 0.2 s), recording it as memout.
+There peak_mem_kb is the largest sampled RSS of the search process tree (FD's
+own "Peak memory" is the virtual size on macOS, which is meaningless).
 """
 from __future__ import annotations
 
@@ -56,12 +80,18 @@ import os
 import platform
 import random
 import re
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+try:
+    import psutil
+except ImportError:  # the watchdog falls back to ps
+    psutil = None
 
 ROOT = Path(__file__).resolve().parents[2]
 DOMAINS = ROOT / "pddl" / "test_domains_target"
@@ -94,7 +124,19 @@ CONFIGS = {
                        "score_based_filtering(scoring_functions=[goal_relevance(),dfp(),total_order()])),"
                        "label_reduction=exact(before_shrinking=true,before_merging=false),"
                        "max_states=50000,threshold_before_merge=1,main_loop_max_time=60))"]),
+    "lazy-astar-blind": (OPT, ["--search", "lazy_wastar([blind()], w=1)"]),
+    "lazy-astar-hmax": (OPT, ["--search", "lazy_wastar([hmax()], w=1)"]),
+    # lazy A* that breaks f ties on h like astar(); lazy_wastar breaks them FIFO and sweeps the whole
+    # f = C* plateau (FA scanner_combined, 20x38, cost 55: 74 expansions / 1 s vs timeout)
+    "lazy-astar-hmax-tb": (OPT, ["--search", "let(h, hmax(), lazy(tiebreaking([sum([g(), h]), h]), reopen_closed=true))"]),
 }
+# configs whose search is LazySearch, the only one that applies __FORCED__ actions in the fork
+FA_AWARE = ["gbfs-ff", "gbfs-add", "gbfs-cea", "gbfs-cg", "wastar3-ff", "lama-first",
+            "lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb"]
+
+# FD's driver cannot limit memory on macOS; watch the RSS there instead
+WATCHDOG = sys.platform == "darwin"
+PLANNER_ENV = {**os.environ, "FD_STATE_DUMP": "0"}
 
 FIELDS = ["host", "group", "model", "set", "problem", "config", "kind", "status", "translate_s",
           "search_s", "search_wall_s", "operators", "variables", "expanded", "evaluated",
@@ -121,13 +163,17 @@ def problems() -> list[tuple[str, str]]:
     return out
 
 
-def jobs(groups: list[str]) -> list[tuple[str, str, str, str, list[str]]]:
+def jobs(groups: list[str], fa: bool = False) -> list[tuple[str, str, str, str, list[str]]]:
     """(group, model, set, problem, configs)."""
     probs = problems()
     large = [p for p in probs if p[0] != "small"]
-    # merge-and-shrink needs its full 60 s construction budget even on 5x5 levels and is
-    # no better than blind there, so it only runs on the small levels
-    cfgs = lambda s: [c for c in CONFIGS if s == "small" or c != "astar-ms"]  # noqa: E731
+    if fa:
+        # only the lazy searches apply forced actions; the rest would just repeat the classic runs
+        cfgs = lambda s: list(FA_AWARE)  # noqa: E731
+    else:
+        # merge-and-shrink needs its full 60 s construction budget even on 5x5 levels and is
+        # no better than blind there, so it only runs on the small levels
+        cfgs = lambda s: [c for c in CONFIGS if s == "small" or c != "astar-ms"]  # noqa: E731
     out = []
     if "A" in groups:
         out += [("A", "scanner_combined", s, p, cfgs(s)) for s, p in probs]
@@ -135,8 +181,11 @@ def jobs(groups: list[str]) -> list[tuple[str, str, str, str, list[str]]]:
         out += [("B", "scanner_separated", s, p, cfgs(s)) for s, p in probs]
     if "C" in groups:
         for m in ("non-scanner_combined", "non-scanner_separated"):
-            out += [("C", m, s, p, list(CONFIGS)) for s, p in probs if s == "small"]
-            out += [("C", m, s, p, ["gbfs-ff", "astar-hmax"]) for s, p in large[:6]]
+            if fa:
+                out += [("C", m, s, p, cfgs(s)) for s, p in probs]
+            else:
+                out += [("C", m, s, p, list(CONFIGS)) for s, p in probs if s == "small"]
+                out += [("C", m, s, p, ["gbfs-ff", "astar-hmax"]) for s, p in large[:6]]
     return out
 
 
@@ -162,12 +211,84 @@ def cpu_name() -> str:
                 return line.split(":", 1)[1].strip()
     except OSError:
         pass
+    if sys.platform == "darwin":
+        try:
+            return subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            pass
     return platform.processor()
 
 
 def default_jobs() -> int:
     # one planner process per core, at most one per 3.5 GB of RAM (3 GB limit + headroom)
     return max(1, min(os.cpu_count() or 1, int(ram_gb() // 3.5)))
+
+
+def parse_mem(s: str) -> int:
+    """'3G' / '3000M' / '3000000K' / bytes -> bytes (FD driver syntax)."""
+    m = re.fullmatch(r"(\d+)([KMG]?)", s.strip().upper())
+    if not m:
+        raise ValueError(f"bad memory limit {s!r}")
+    return int(m.group(1)) * {"": 1, "K": 2**10, "M": 2**20, "G": 2**30}[m.group(2)]
+
+
+def tree_rss(pid: int) -> int:
+    """Resident set size of pid and all its descendants, in bytes."""
+    if psutil is not None:
+        try:
+            procs = [psutil.Process(pid)]
+            procs += procs[0].children(recursive=True)
+        except psutil.NoSuchProcess:
+            return 0
+        total = 0
+        for p in procs:
+            try:
+                total += p.memory_info().rss
+            except psutil.NoSuchProcess:
+                pass
+        return total
+    out = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,rss="], capture_output=True, text=True).stdout
+    kids, rss = {}, {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 3:
+            p, pp, r = (int(x) for x in parts)
+            kids.setdefault(pp, []).append(p)
+            rss[p] = r * 1024
+    total, todo = 0, [pid]
+    while todo:
+        p = todo.pop()
+        total += rss.get(p, 0)
+        todo += kids.get(p, [])
+    return total
+
+
+def run_limited(cmd: list[str], cwd: Path, mem_bytes: int | None) -> tuple[int, str, bool, int | None]:
+    """Run cmd (stdout+stderr captured). With mem_bytes, poll the RSS of the process tree
+    every 0.2 s and kill the process group as soon as it exceeds mem_bytes.
+    Returns (returncode, output, killed_for_memory, peak sampled RSS in KB or None)."""
+    with tempfile.TemporaryFile("w+") as out:
+        p = subprocess.Popen(cmd, cwd=cwd, stdout=out, stderr=subprocess.STDOUT, text=True,
+                             env=PLANNER_ENV, start_new_session=True)
+        memout, peak = False, 0
+        while True:
+            try:
+                rc = p.wait(timeout=0.2)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            if mem_bytes:
+                rss = tree_rss(p.pid)
+                peak = max(peak, rss)
+                if rss > mem_bytes:
+                    memout = True
+                    try:
+                        os.killpg(p.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+        out.seek(0)
+        return rc, out.read(), memout, (peak // 1024 if peak else None)
 
 
 def ensure_fd(fd: Path | None) -> Path:
@@ -191,7 +312,7 @@ def run_job(job, fd: Path, args, done: set) -> list[dict]:
     cfgs = [c for c in cfgs if (model, prob, c) not in done]
     if not cfgs:
         return []
-    host = socket.gethostname()
+    host = args.host
     domain_stem = f"domain_{'FA' if args.fa else 'classic'}_{model}"
     domain = DOMAINS / f"{domain_stem}.pddl"
     gen = DOMAINS / f"problem_gen_domain_{'FA_' if args.fa else ''}{model}.py"
@@ -207,36 +328,39 @@ def run_job(job, fd: Path, args, done: set) -> list[dict]:
             return [{**base, "config": c, "kind": CONFIGS[c][0], "status": "gen-error", "rc": e.returncode}
                     for c in cfgs]
         (work / "problem.pddl").write_text(text)
+        watch = parse_mem(args.mem) if WATCHDOG else None
         tcmd = [sys.executable, str(fd / "fast-downward.py"), "--translate",
-                "--translate-time-limit", f"{args.translate_timeout}s",
-                "--translate-memory-limit", args.mem, str(domain), str(work / "problem.pddl")]
+                "--translate-time-limit", f"{args.translate_timeout}s"]
+        if not WATCHDOG:
+            tcmd += ["--translate-memory-limit", args.mem]
+        tcmd += [str(domain), str(work / "problem.pddl")]
         if not args.translator_default:
             tcmd += ["--translate-options", "--invariant-generation-max-candidates", "0"]
         t0 = time.time()
-        tp = subprocess.run(tcmd, capture_output=True, text=True, cwd=work)
-        ttext = tp.stdout + tp.stderr
+        trc, ttext, tmem, _ = run_limited(tcmd, work, watch)
         tr = {"translate_s": round(time.time() - t0, 2),
               "operators": last(r"Translator operators: ([0-9]+)", ttext, int),
               "variables": last(r"Translator variables: ([0-9]+)", ttext, int)}
-        if tp.returncode != 0 or not (work / "output.sas").exists():
-            st = "translate-" + ("memout" if "MemoryError" in ttext or tp.returncode == 20
-                                 else "timeout" if tp.returncode == 21 else f"error({tp.returncode})")
-            return [{**base, **tr, "config": c, "kind": CONFIGS[c][0], "status": st, "rc": tp.returncode}
+        if trc != 0 or tmem or not (work / "output.sas").exists():
+            st = "translate-" + ("memout" if tmem or "MemoryError" in ttext or trc == 20
+                                 else "timeout" if trc == 21 else f"error({trc})")
+            return [{**base, **tr, "config": c, "kind": CONFIGS[c][0], "status": st, "rc": trc}
                     for c in cfgs]
         for c in cfgs:
             kind, cargs = CONFIGS[c]
             cmd = [sys.executable, str(fd / "fast-downward.py"),
-                   "--search-time-limit", f"{args.timeout}s", "--search-memory-limit", args.mem,
-                   "--plan-file", str(work / "plan")]
+                   "--search-time-limit", f"{args.timeout}s", "--plan-file", str(work / "plan")]
+            if not WATCHDOG:
+                cmd += ["--search-memory-limit", args.mem]
             if cargs[0] == "--alias":
                 cmd += cargs + [str(work / "output.sas")]
             else:
                 cmd += [str(work / "output.sas")] + cargs
             t1 = time.time()
-            p = subprocess.run(cmd, capture_output=True, text=True, cwd=work)
-            text = p.stdout + p.stderr
-            solved = "Solution found." in text
-            status = "solved" if solved else EXIT.get(p.returncode, f"error({p.returncode})")
+            rc, text, memout, rss_kb = run_limited(cmd, work, watch)
+            solved = "Solution found." in text and not memout
+            status = ("solved" if solved else "memout" if memout
+                      else EXIT.get(rc, f"error({rc})"))
             rows.append({**base, **tr, "config": c, "kind": kind, "status": status,
                          "search_s": last(r"Search time: ([0-9.]+)s", text),
                          "search_wall_s": round(time.time() - t1, 2),
@@ -245,17 +369,47 @@ def run_job(job, fd: Path, args, done: set) -> list[dict]:
                          "generated": last(r"Generated ([0-9]+) state", text, int),
                          "plan_cost": last(r"Plan cost: ([0-9]+)", text, int) if solved else None,
                          "plan_len": last(r"Plan length: ([0-9]+) step", text, int) if solved else None,
-                         "peak_mem_kb": last(r"Peak memory: ([0-9]+) KB", text, int),
-                         "rc": p.returncode})
+                         # FD reports the virtual size on macOS (includes ~34 GB of shared cache)
+                         "peak_mem_kb": rss_kb if WATCHDOG else last(r"Peak memory: ([0-9]+) KB", text, int),
+                         "rc": rc})
             for f in work.glob("plan*"):
                 f.unlink()
     return rows
+
+
+def fd_revision(fd: Path) -> str:
+    """Commit of the FD checkout, plus the files with local changes, if any."""
+    try:
+        rev = subprocess.run(["git", "-C", str(fd), "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(fd), "status", "--porcelain", "--untracked-files=no"],
+                               capture_output=True, text=True, check=True).stdout.split("\n")
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    changed = [l[3:] for l in dirty if l.strip()]
+    return rev + (f" + local changes ({', '.join(changed)})" if changed else "")
+
+
+def write_host_file(path: Path, csv_name: str, a, fd: Path) -> None:
+    """Machine description plus one 'run' line per results CSV written from this machine."""
+    runs = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            if line.startswith("run["):
+                runs[line[4:line.index("]")]] = line
+    mem = "rss-watchdog (macOS: FD cannot set memory limits)" if WATCHDOG else "rlimit (FD driver)"
+    runs[csv_name] = (f"run[{csv_name}]=jobs={a.jobs} timeout={a.timeout}s mem={a.mem} mem_limit={mem} "
+                      f"fd={fd.name}@{fd_revision(fd)} FD_STATE_DUMP=0")
+    path.write_text(
+        f"host={a.host}\ncpus={os.cpu_count()}\nram_gb={ram_gb():.0f}\ncpu={cpu_name()}\n"
+        f"platform={platform.platform()}\n" + "".join(l + "\n" for _, l in sorted(runs.items())))
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fd", type=Path, help="Fast Downward checkout (default: build upstream 24.06.1)")
     ap.add_argument("--groups", default="A,B,C")
+    ap.add_argument("--configs", help="comma-separated subset of CONFIGS to run (default: the group's list)")
     ap.add_argument("--shard", default="0/1", help="i/N: run every N-th job starting at i")
     ap.add_argument("--jobs", type=int, default=default_jobs(), help="parallel jobs (default: cores, capped by RAM)")
     ap.add_argument("--timeout", type=int, default=300, help="search time limit per config (s)")
@@ -264,12 +418,21 @@ def main() -> int:
     ap.add_argument("--translator-default", action="store_true", help="keep FD's invariant synthesis")
     ap.add_argument("--fa", action="store_true", help="use the domain_FA_* files (needs the forced-action fork)")
     ap.add_argument("--out", type=Path, default=ROOT / "tools/benchmarking/sweep_results")
+    ap.add_argument("--host", default=socket.gethostname(),
+                    help="machine label for the CSV / host file names (default: hostname)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
     groups = [g.strip() for g in a.groups.split(",") if g.strip()]
     si, sn = (int(x) for x in a.shard.split("/"))
-    all_jobs = jobs(groups)
+    all_jobs = jobs(groups, a.fa)
+    if a.configs:
+        keep = [c.strip() for c in a.configs.split(",") if c.strip()]
+        unknown = [c for c in keep if c not in CONFIGS]
+        if unknown:
+            sys.exit(f"unknown configs: {', '.join(unknown)} (have: {', '.join(CONFIGS)})")
+        all_jobs = [(g, m, st, p, [c for c in cs if c in keep]) for g, m, st, p, cs in all_jobs]
+        all_jobs = [j for j in all_jobs if j[4]]
     mine = [j for i, j in enumerate(all_jobs) if i % sn == si]
     n_runs = sum(len(j[4]) for j in mine)
     print(f"{len(mine)} jobs / {n_runs} planner runs (shard {si}/{sn} of {len(all_jobs)} jobs, groups {groups})",
@@ -281,16 +444,14 @@ def main() -> int:
 
     fd = ensure_fd(a.fd)
     a.out.mkdir(parents=True, exist_ok=True)
-    host = socket.gethostname()
+    host = a.host
     csv_path = a.out / f"results_{host}{'_fa' if a.fa else ''}{'_default' if a.translator_default else ''}.csv"
     done = set()
     if csv_path.exists():
         for r in csv.DictReader(csv_path.open()):
             if not r["status"].startswith(("error", "gen-error")):
                 done.add((r["model"], r["problem"], r["config"]))
-    (a.out / f"host_{host}.txt").write_text(
-        f"host={host}\ncpus={os.cpu_count()}\nram_gb={ram_gb():.0f}\ncpu={cpu_name()}\n"
-        f"platform={platform.platform()}\njobs={a.jobs}\ntimeout={a.timeout}\nmem={a.mem}\nfd={fd}\n")
+    write_host_file(a.out / f"host_{host}.txt", csv_path.name, a, fd)
     new = not csv_path.exists()
     t0, finished = time.time(), 0
     with csv_path.open("a", newline="") as fh, cf.ThreadPoolExecutor(a.jobs) as ex:
