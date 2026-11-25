@@ -390,6 +390,23 @@ def fd_revision(fd: Path) -> str:
     return rev + (f" + local changes ({', '.join(changed)})" if changed else "")
 
 
+def domains_revision() -> str:
+    """Last commit that touched the test domains or their problem generators, plus local changes.
+
+    The results CSVs do not say which version of the models they measured; this goes into the
+    host file's run line so results from before and after a domain change are not mixed up."""
+    paths = ["pddl/test_domains_target/*.pddl", "pddl/test_domains_target/*.py", "pddl/problem_gen_rowscan.py",
+             "pddl/problem_gen_cellscan.py", "pddl/problem_gen_orderfree.py"]
+    try:
+        rev = subprocess.run(["git", "-C", str(ROOT), "log", "-1", "--format=%h", "--", *paths],
+                             capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain", "--", *paths],
+                               capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return (rev or "unknown") + (" + local changes" if dirty else "")
+
+
 def write_host_file(path: Path, csv_name: str, a, fd: Path) -> None:
     """Machine description plus one 'run' line per results CSV written from this machine."""
     runs = {}
@@ -399,7 +416,7 @@ def write_host_file(path: Path, csv_name: str, a, fd: Path) -> None:
                 runs[line[4:line.index("]")]] = line
     mem = "rss-watchdog (macOS: FD cannot set memory limits)" if WATCHDOG else "rlimit (FD driver)"
     runs[csv_name] = (f"run[{csv_name}]=jobs={a.jobs} timeout={a.timeout}s mem={a.mem} mem_limit={mem} "
-                      f"fd={fd.name}@{fd_revision(fd)} FD_STATE_DUMP=0")
+                      f"fd={fd.name}@{fd_revision(fd)} FD_STATE_DUMP=0 domains={domains_revision()}")
     path.write_text(
         f"host={a.host}\ncpus={os.cpu_count()}\nram_gb={ram_gb():.0f}\ncpu={cpu_name()}\n"
         f"platform={platform.platform()}\n" + "".join(l + "\n" for _, l in sorted(runs.items())))
