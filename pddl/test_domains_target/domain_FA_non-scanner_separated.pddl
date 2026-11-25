@@ -16,8 +16,16 @@
 ;   * pushed stones are falling iff the cell below their destination is empty;
 ;   * the target-gem marker travels with its gem.
 ;
+; Only objects that can move are updated: a change to a cell marks the objects
+; that read it dirty (vacated cell: the cell, above, left, right, up-left,
+; up-right; a support that stopped falling: the object above; a moved object:
+; itself), and start_tick makes the dirty stones/gems pending.  Every other
+; object provably stays put: within a tick an update can only block objects
+; later in the engine's scan, never enable them (see
+; pddl/test_domains_target/README.md).
+;
 ; Order-free: there is no scan pointer.  After an agent move, start_tick marks
-; every stone/gem pending.  select_object picks any pending object whose
+; the dirty stones/gems pending.  select_object picks any pending object whose
 ; conflict window
 ;
 ;        k-2 k-1  k  k+1 k+2
@@ -79,6 +87,7 @@
     (tick-start)                       ; agent has moved, objects not marked yet
     (pushed ?c - cell)                 ; stone pushed by the agent this tick
     (pending ?c - cell)                ; stone/gem not yet updated this tick
+    (dirty ?c - cell)                  ; a cell it reads changed: update it next tick
     (busy)                             ; an object is selected
     (active ?c - cell)                 ; the selected object
 
@@ -109,73 +118,66 @@
   )
 
   (:action move_empty
-    :parameters (?from ?to - real-cell)
+    :parameters (?from ?to - real-cell ?fu ?fl ?fr ?ful ?fur - cell)
     :precondition (and
       (agent-alive) (not (update-required))
       (agent-at ?from)
+      (up ?from ?fu) (right-of ?fl ?from) (right-of ?from ?fr) (right-of ?ful ?fu) (right-of ?fu ?fur)
       (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
       (empty ?to))
     :effect (and
       (not (agent-at ?from)) (empty ?from)
       (not (empty ?to)) (agent-at ?to)
+      (dirty ?fu) (dirty ?fl) (dirty ?fr) (dirty ?ful) (dirty ?fur)
       (update-required) (tick-start)
       (increase (total-cost) 1))
   )
 
   ;; Move into dirt (mines it).
   (:action move_into_dirt
-    :parameters (?from ?to - real-cell)
+    :parameters (?from ?to - real-cell ?fu ?fl ?fr ?ful ?fur - cell)
     :precondition (and
       (agent-alive) (not (update-required))
       (agent-at ?from)
+      (up ?from ?fu) (right-of ?fl ?from) (right-of ?from ?fr) (right-of ?ful ?fu) (right-of ?fu ?fur)
       (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
       (dirt ?to))
     :effect (and
       (not (agent-at ?from)) (empty ?from)
       (not (dirt ?to)) (agent-at ?to)
+      (dirty ?fu) (dirty ?fl) (dirty ?fr) (dirty ?ful) (dirty ?fur)
       (update-required) (tick-start)
       (increase (total-cost) 1))
   )
 
-  ;; Collect an ordinary gem (resting or falling).
+  ;; Collect a gem (resting or falling); the target gem sets got-gem.
   (:action move_into_gem
-    :parameters (?from ?to - real-cell)
+    :parameters (?from ?to - real-cell ?fu ?fl ?fr ?ful ?fur - cell)
     :precondition (and
       (agent-alive) (not (update-required))
       (agent-at ?from)
+      (up ?from ?fu) (right-of ?fl ?from) (right-of ?from ?fr) (right-of ?ful ?fu) (right-of ?fu ?fur)
       (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
-      (gem ?to) (not (target-gem ?to)))
+      (gem ?to))
     :effect (and
       (not (agent-at ?from)) (empty ?from)
-      (not (gem ?to)) (not (falling ?to)) (agent-at ?to)
+      (not (gem ?to)) (not (falling ?to))
+      (when (target-gem ?to) (and (not (target-gem ?to)) (got-gem))) (agent-at ?to)
+      (dirty ?fu) (dirty ?fl) (dirty ?fr) (dirty ?ful) (dirty ?fur)
       (update-required) (tick-start)
       (increase (total-cost) 1))
   )
 
-  ;; Collect the distinguished target gem.
-  (:action move_into_target_gem
-    :parameters (?from ?to - real-cell)
-    :precondition (and
-      (agent-alive) (not (update-required))
-      (agent-at ?from)
-      (or (up ?from ?to) (down ?from ?to) (right-of ?from ?to) (right-of ?to ?from))
-      (gem ?to) (target-gem ?to))
-    :effect (and
-      (not (agent-at ?from)) (empty ?from)
-      (not (gem ?to)) (not (target-gem ?to)) (not (falling ?to)) (agent-at ?to)
-      (got-gem)
-      (update-required) (tick-start)
-      (increase (total-cost) 1))
-  )
 
   ;; Horizontal push of a resting stone into an empty cell.  The pushed stone
   ;; is not updated again this tick (start_tick does not mark it pending) and
   ;; is falling iff the cell below its destination is empty.
   (:action move_push_rock
-    :parameters (?from ?to ?stone_dest - real-cell ?below - cell)
+    :parameters (?from ?to ?stone_dest - real-cell ?below ?fu ?fl ?fr ?ful ?fur - cell)
     :precondition (and
       (agent-alive) (not (update-required))
       (agent-at ?from)
+      (up ?from ?fu) (right-of ?fl ?from) (right-of ?from ?fr) (right-of ?ful ?fu) (right-of ?fu ?fur)
       (or (and (right-of ?from ?to) (right-of ?to ?stone_dest))
           (and (right-of ?to ?from) (right-of ?stone_dest ?to)))
       (stone ?to) (not (falling ?to))
@@ -184,8 +186,9 @@
     :effect (and
       (not (agent-at ?from)) (empty ?from)
       (not (stone ?to)) (agent-at ?to)
-      (not (empty ?stone_dest)) (stone ?stone_dest) (pushed ?stone_dest)
+      (not (empty ?stone_dest)) (stone ?stone_dest) (pushed ?stone_dest) (dirty ?stone_dest)
       (when (empty ?below) (falling ?stone_dest))
+      (dirty ?fu) (dirty ?fl) (dirty ?fr) (dirty ?ful) (dirty ?fur)
       (update-required) (tick-start)
       (increase (total-cost) 1))
   )
@@ -205,14 +208,17 @@
     :effect (and (busy) (active ?c) (check_fall))
   )
 
-  ;; Mark every stone/gem pending, except a stone the agent just pushed.
+  ;; Mark the dirty stones/gems pending (all others provably stay put this
+  ;; tick), except a stone the agent just pushed: it stays dirty for the next
+  ;; tick.
   (:action __FORCED__start_tick
     :parameters ()
     :precondition (tick-start)
     :effect (and
       (not (tick-start))
-      (forall (?cc - real-cell)
-        (and (when (and (or (stone ?cc) (gem ?cc)) (not (pushed ?cc))) (pending ?cc))
+      (forall (?cc - cell)
+        (and (when (and (dirty ?cc) (or (stone ?cc) (gem ?cc)) (not (pushed ?cc))) (pending ?cc))
+             (when (not (pushed ?cc)) (not (dirty ?cc)))
              (not (pushed ?cc)))))
   )
 
@@ -248,8 +254,12 @@
     :parameters (?c - real-cell ?down - cell)
     :precondition (and
       (active ?c) (check_fall)
-      (down ?c ?down) (not (empty ?down))
-      (or (not (falling ?c)) (not (agent-at ?down))))
+      (down ?c ?down)
+      ;; below is not empty, and not the agent under a falling object
+      ;; (written without negating agent-at: Fast Downward makes the agent
+      ;; position one multi-valued variable and would split the negation)
+      (or (and (not (falling ?c)) (not (empty ?down)))
+          (dirt ?down) (stone ?down) (gem ?down) (rounded-wall ?down) (flat-wall ?down)))
     :effect (and (not (check_fall)) (check_roll_left))
   )
 
@@ -270,8 +280,8 @@
     :precondition (and
       (active ?c) (check_roll_left)
       (down ?c ?down) (right-of ?left ?c) (down ?left ?down_left)
-      (or (and (not (rounded-wall ?down))
-               (or (falling ?down) (and (not (stone ?down)) (not (gem ?down)))))
+      ;; support not rounded (it is not empty here), or left side blocked
+      (or (dirt ?down) (agent-at ?down) (falling ?down) (flat-wall ?down)
           (not (empty ?left))
           (not (empty ?down_left))))
     :effect (and (not (check_roll_left)) (check_roll_right))
@@ -292,8 +302,8 @@
     :precondition (and
       (active ?c) (check_roll_right)
       (down ?c ?down) (right-of ?c ?right) (down ?right ?down_right)
-      (or (and (not (rounded-wall ?down))
-               (or (falling ?down) (and (not (stone ?down)) (not (gem ?down)))))
+      ;; support not rounded (it is not empty here), or right side blocked
+      (or (dirt ?down) (agent-at ?down) (falling ?down) (flat-wall ?down)
           (not (empty ?right))
           (not (empty ?down_right))))
     :effect (and (not (check_roll_right)) (ready_to_move))
@@ -304,76 +314,88 @@
   ;; ======================================================================
 
   (:action __FORCED__stone_fall
-    :parameters (?c ?down - real-cell)
-    :precondition (and (active ?c) (ready_to_move) (can_fall) (stone ?c) (down ?c ?down))
+    :parameters (?c ?down - real-cell ?u ?ul ?ur ?l ?r - cell)
+    :precondition (and (active ?c) (ready_to_move) (can_fall) (stone ?c) (down ?c ?down)
+      (up ?c ?u) (right-of ?ul ?u) (right-of ?u ?ur) (right-of ?l ?c) (right-of ?c ?r))
     :effect (and
       (not (stone ?c)) (not (falling ?c)) (empty ?c)
       (not (empty ?down)) (stone ?down) (falling ?down)
       (not (ready_to_move)) (not (can_fall))
+      (dirty ?u) (dirty ?ul) (dirty ?ur) (dirty ?l) (dirty ?r) (dirty ?down)
       (not (active ?c)) (not (busy)) (not (pending ?c)))
   )
 
   (:action __FORCED__gem_fall
-    :parameters (?c ?down - real-cell)
-    :precondition (and (active ?c) (ready_to_move) (can_fall) (gem ?c) (down ?c ?down))
+    :parameters (?c ?down - real-cell ?u ?ul ?ur ?l ?r - cell)
+    :precondition (and (active ?c) (ready_to_move) (can_fall) (gem ?c) (down ?c ?down)
+      (up ?c ?u) (right-of ?ul ?u) (right-of ?u ?ur) (right-of ?l ?c) (right-of ?c ?r))
     :effect (and
       (not (gem ?c)) (not (falling ?c)) (empty ?c)
       (when (target-gem ?c) (and (not (target-gem ?c)) (target-gem ?down)))
       (not (empty ?down)) (gem ?down) (falling ?down)
       (not (ready_to_move)) (not (can_fall))
+      (dirty ?u) (dirty ?ul) (dirty ?ur) (dirty ?l) (dirty ?r) (dirty ?down)
       (not (active ?c)) (not (busy)) (not (pending ?c)))
   )
 
   (:action __FORCED__stone_roll_left
-    :parameters (?c ?left - real-cell)
-    :precondition (and (active ?c) (ready_to_move) (can_roll_left) (stone ?c) (right-of ?left ?c))
+    :parameters (?c ?left - real-cell ?u ?ul ?ur ?r - cell)
+    :precondition (and (active ?c) (ready_to_move) (can_roll_left) (stone ?c) (right-of ?left ?c)
+      (up ?c ?u) (right-of ?ul ?u) (right-of ?u ?ur) (right-of ?c ?r))
     :effect (and
       (not (stone ?c)) (not (falling ?c)) (empty ?c)
       (not (empty ?left)) (stone ?left) (falling ?left)
       (not (ready_to_move)) (not (can_roll_left))
+      (dirty ?u) (dirty ?ul) (dirty ?ur) (dirty ?left) (dirty ?r)
       (not (active ?c)) (not (busy)) (not (pending ?c)))
   )
 
   (:action __FORCED__gem_roll_left
-    :parameters (?c ?left - real-cell)
-    :precondition (and (active ?c) (ready_to_move) (can_roll_left) (gem ?c) (right-of ?left ?c))
+    :parameters (?c ?left - real-cell ?u ?ul ?ur ?r - cell)
+    :precondition (and (active ?c) (ready_to_move) (can_roll_left) (gem ?c) (right-of ?left ?c)
+      (up ?c ?u) (right-of ?ul ?u) (right-of ?u ?ur) (right-of ?c ?r))
     :effect (and
       (not (gem ?c)) (not (falling ?c)) (empty ?c)
       (when (target-gem ?c) (and (not (target-gem ?c)) (target-gem ?left)))
       (not (empty ?left)) (gem ?left) (falling ?left)
       (not (ready_to_move)) (not (can_roll_left))
+      (dirty ?u) (dirty ?ul) (dirty ?ur) (dirty ?left) (dirty ?r)
       (not (active ?c)) (not (busy)) (not (pending ?c)))
   )
 
   (:action __FORCED__stone_roll_right
-    :parameters (?c ?right - real-cell)
-    :precondition (and (active ?c) (ready_to_move) (can_roll_right) (stone ?c) (right-of ?c ?right))
+    :parameters (?c ?right - real-cell ?u ?ul ?ur ?l - cell)
+    :precondition (and (active ?c) (ready_to_move) (can_roll_right) (stone ?c) (right-of ?c ?right)
+      (up ?c ?u) (right-of ?ul ?u) (right-of ?u ?ur) (right-of ?l ?c))
     :effect (and
       (not (stone ?c)) (not (falling ?c)) (empty ?c)
       (not (empty ?right)) (stone ?right) (falling ?right)
       (not (ready_to_move)) (not (can_roll_right))
+      (dirty ?u) (dirty ?ul) (dirty ?ur) (dirty ?l) (dirty ?right)
       (not (active ?c)) (not (busy)) (not (pending ?c)))
   )
 
   (:action __FORCED__gem_roll_right
-    :parameters (?c ?right - real-cell)
-    :precondition (and (active ?c) (ready_to_move) (can_roll_right) (gem ?c) (right-of ?c ?right))
+    :parameters (?c ?right - real-cell ?u ?ul ?ur ?l - cell)
+    :precondition (and (active ?c) (ready_to_move) (can_roll_right) (gem ?c) (right-of ?c ?right)
+      (up ?c ?u) (right-of ?ul ?u) (right-of ?u ?ur) (right-of ?l ?c))
     :effect (and
       (not (gem ?c)) (not (falling ?c)) (empty ?c)
       (when (target-gem ?c) (and (not (target-gem ?c)) (target-gem ?right)))
       (not (empty ?right)) (gem ?right) (falling ?right)
       (not (ready_to_move)) (not (can_roll_right))
+      (dirty ?u) (dirty ?ul) (dirty ?ur) (dirty ?l) (dirty ?right)
       (not (active ?c)) (not (busy)) (not (pending ?c)))
   )
 
   ;; Cannot move: a falling object comes to rest, a resting one stays.
   (:action __FORCED__stone_gem_settle
-    :parameters (?c - real-cell)
+    :parameters (?c - real-cell ?u - cell)
     :precondition (and
-      (active ?c) (ready_to_move)
+      (active ?c) (ready_to_move) (up ?c ?u)
       (not (can_fall)) (not (can_roll_left)) (not (can_roll_right)))
     :effect (and
-      (not (falling ?c)) (not (ready_to_move))
+      (not (falling ?c)) (when (falling ?c) (dirty ?u)) (not (ready_to_move))
       (not (active ?c)) (not (busy)) (not (pending ?c)))
   )
 )

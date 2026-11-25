@@ -6,9 +6,9 @@ is shared with pddl/problem_gen.py.  Differences from that generator:
 
 * walls are flat (steel 19, exits 7/8, unmodelled elements, the 1-cell padding)
   or rounded (brick 18); walls inside the level also get (brick c);
-* the scan chain visits every cell inside the level in row-major order and
-  ends on the `scan_end` sentinel;
-* the initial state is between ticks (scan-complete).
+* the scan chain is gate(row) -> open (non-wall) cells of the row -> next
+  gate ... -> `scan_done`; all rows start dirty;
+* the initial state is between ticks (scan pointer on `scan_done`).
 
 Usage:
   python pddl/problem_gen_cellscan.py pddl/level_5_5.txt [-p name] [-d domain]
@@ -25,11 +25,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import problem_gen as base  # noqa: E402
 
 ROUNDED_WALL_IDS = {18}
-SCAN_END = "scan_end"
+DONE = "scan_done"
 
 
 def cell(r: int, c: int) -> str:
     return f"c_{r}_{c}"
+
+
+def row(r: int) -> str:
+    return f"row_{r}"
 
 
 def content_facts(name: str, cid: int, target: bool) -> list[str]:
@@ -56,15 +60,24 @@ def generate_problem(level_text: str, problem_name: str = "level", domain_name: 
     target = None if prepared.initial_got_gem else prepared.target_gem_pos
     pr, pc = rows + 2, cols + 2  # padded
 
+    def is_open(r: int, c: int) -> bool:
+        if r in (0, pr - 1) or c in (0, pc - 1):
+            return False
+        return base.classify_cell_id(ids[(r - 1) * cols + (c - 1)]) != "brick"
+
     interior = [cell(r, c) for r in range(1, pr - 1) for c in range(1, pc - 1)]
     border = [cell(r, c) for r in range(pr) for c in range(pc) if r in (0, pr - 1) or c in (0, pc - 1)]
+    row_objs = [row(r) for r in range(pr)] + [DONE]
 
-    init = ["(agent-alive)", "(scan-complete)"]
+    init = ["(agent-alive)", f"(scan-at {DONE})", f"(scan-done {DONE})"]
     if prepared.initial_got_gem:
         init.append("(got-gem)")
     for r in range(pr):
+        if r > 0:
+            init.append(f"(row-above {row(r)} {row(r - 1)})")
         for c in range(pc):
             name = cell(r, c)
+            init.append(f"(cell-row {name} {row(r)})")
             if r > 0:
                 init.append(f"(up {name} {cell(r - 1, c)})")
             if r < pr - 1:
@@ -77,23 +90,33 @@ def generate_problem(level_text: str, problem_name: str = "level", domain_name: 
                 cid = ids[(r - 1) * cols + (c - 1)]
                 init.extend(content_facts(name, cid, target == (r - 1, c - 1)))
 
-    order = interior + [SCAN_END]
-    init.append(f"(first-cell {order[0]})")
-    init.extend(f"(next-cell {a} {b})" for a, b in zip(order, order[1:]))
-    init.append(f"(last-cell {SCAN_END})")
+    # scan chain: gate -> open cells of the row -> next gate ... -> done
+    gated = [r for r in range(1, pr - 1) if any(is_open(r, c) for c in range(1, pc - 1))]
+    if gated:
+        init.append(f"(first-row {row(gated[0])})")
+    for i, r in enumerate(gated):
+        nxt = row(gated[i + 1]) if i + 1 < len(gated) else DONE
+        init.append(f"(next-row {row(r)} {nxt})")
+        init.append(f"(row-dirty {row(r)})")
+        open_cols = [c for c in range(1, pc - 1) if is_open(r, c)]
+        init.append(f"(row-start {row(r)} {cell(r, open_cols[0])})")
+        for j, c in enumerate(open_cols):
+            succ = cell(r, open_cols[j + 1]) if j + 1 < len(open_cols) else nxt
+            init.append(f"(next-pos {cell(r, c)} {succ})")
 
     nl = "\n"
     return f"""(define (problem {problem_name})
   (:domain {domain_name})
   (:objects
     {' '.join(interior)} - real-cell
-    {' '.join(border + [SCAN_END])} - border-cell
+    {' '.join(border)} - border-cell
+    {' '.join(row_objs)} - row
   )
   (:init
     (= (total-cost) 0)
 {nl.join('    ' + a for a in init)}
   )
-  (:goal (and (got-gem) (agent-alive) (scan-complete)))
+  (:goal (and (got-gem) (agent-alive) (scan-at {DONE})))
   (:metric minimize (total-cost))
 )
 """

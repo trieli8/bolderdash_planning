@@ -7,7 +7,10 @@ flat).  There is no scan chain.  Each padded row is extended by a
 `left_void` / `right_void` neighbour so that every cell inside the level has
 the full conflict window used by the order-free physics actions (two cells
 left in its row, k-2..k+2 in the row above); the void cells never hold
-anything.  The initial state is between ticks (no update-required).
+anything.  The initial state is between ticks (no update-required); only the
+stones/gems that can move on the initial board are dirty (falling, empty
+below, or a rounded support with a free side), every other one provably stays
+put until something around it changes.
 
 Usage:
   python pddl/problem_gen_orderfree.py pddl/level_5_5.txt [-p name] [-d domain]
@@ -22,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import problem_gen as base  # noqa: E402
-from problem_gen_cellscan import cell, content_facts  # noqa: E402
+from problem_gen_cellscan import ROUNDED_WALL_IDS, cell, content_facts  # noqa: E402
 
 LEFT_VOID, RIGHT_VOID = "left_void", "right_void"
 
@@ -36,6 +39,28 @@ def generate_problem(level_text: str, problem_name: str = "level", domain_name: 
 
     interior = [cell(r, c) for r in range(1, pr - 1) for c in range(1, pc - 1)]
     border = [cell(r, c) for r in range(pr) for c in range(pc) if r in (0, pr - 1) or c in (0, pc - 1)]
+
+    def kind(r: int, c: int) -> str:
+        if r in (0, pr - 1) or c in (0, pc - 1):
+            return "brick"
+        return base.classify_cell_id(ids[(r - 1) * cols + (c - 1)])
+
+    def falling(r: int, c: int) -> bool:
+        cid = ids[(r - 1) * cols + (c - 1)]
+        return cid in base.STONE_FALLING_IDS or cid in base.GEM_FALLING_IDS
+
+    def may_move(r: int, c: int) -> bool:
+        """Objects the first tick must update: all others provably stay put."""
+        if kind(r, c) not in ("stone", "gem"):
+            return False
+        if falling(r, c) or kind(r + 1, c) == "empty":
+            return True
+        below = kind(r + 1, c)
+        rounded = (below in ("stone", "gem") and not falling(r + 1, c)) or (
+            below == "brick" and r + 1 < pr - 1 and ids[r * cols + (c - 1)] in ROUNDED_WALL_IDS)
+        return rounded and (
+            (kind(r, c - 1) == "empty" and kind(r + 1, c - 1) == "empty")
+            or (kind(r, c + 1) == "empty" and kind(r + 1, c + 1) == "empty"))
 
     init = ["(agent-alive)"]
     if prepared.initial_got_gem:
@@ -56,6 +81,8 @@ def generate_problem(level_text: str, problem_name: str = "level", domain_name: 
             else:
                 cid = ids[(r - 1) * cols + (c - 1)]
                 init.extend(content_facts(name, cid, target == (r - 1, c - 1)))
+                if may_move(r, c):
+                    init.append(f"(dirty {name})")
 
     nl = "\n"
     return f"""(define (problem {problem_name})
