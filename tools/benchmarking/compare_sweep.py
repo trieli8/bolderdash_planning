@@ -246,18 +246,45 @@ def main() -> int:
 
     # ---- models under FA ----
     out("\n## Models compared under FA\n")
-    out("Per config: coverage on the large problems (l1 + other) and geometric-mean search time on the "
-        "large tasks every model solved with that config.\n")
+    out("Per config, on the large problems (l1 + other). Coverage is solved / problems run for that model "
+        "(`–` = not run). `common` counts the large tasks solved by every model that ran the config; "
+        "the time columns are geometric-mean search times over that common set.\n")
     large = [p for s in ("l1", "other") for p in probs.get(s, []) if p not in nop]
     out("| config | " + " | ".join(f"{SHORT[m]} cov" for m in models) + " | common | "
         + " | ".join(f"{SHORT[m]} time" for m in models) + " |")
     out("|---|" + "---|" * (2 * len(models) + 1))
     for c in FA_AWARE:
-        covs = [sum(solved(FA.get((m, p, c))) for p in large) for m in models]
-        common = [p for p in large if all(solved(FA.get((m, p, c))) for m in models)]
-        ts = [gmean([fnum(FA[(m, p, c)]["search_s"]) or 0 for p in common]) if common else None for m in models]
-        out(f"| {c} | " + " | ".join(f"{n}/{len(large)}" for n in covs) + f" | {len(common)} | "
-            + " | ".join(fmt_t(t) for t in ts) + " |")
+        ran = {m: [p for p in large if (m, p, c) in FA] for m in models}
+        have = [m for m in models if ran[m]]
+        if not have:
+            continue
+        common = [p for p in large if all(solved(FA.get((m, p, c))) for m in have)]
+        covs = [f"{sum(solved(FA[(m, p, c)]) for p in ran[m])}/{len(ran[m])}" if ran[m] else "–"
+                for m in models]
+        ts = [gmean([fnum(FA[(m, p, c)]["search_s"]) or 0 for p in common]) if common and m in have else None
+              for m in models]
+        out(f"| {c} | " + " | ".join(covs) + f" | {len(common)} | " + " | ".join(fmt_t(t) for t in ts) + " |")
+
+    # pairwise against a reference model, so one weak model does not empty the common set
+    ref = models[0]
+    others = models[1:]
+    if others:
+        out(f"\nSearch time relative to {SHORT[ref]} under FA (pairwise: geometric mean of "
+            f"time / {SHORT[ref]} time over the large tasks both solved; >1 = slower than {SHORT[ref]}).\n")
+        out("| config | " + " | ".join(SHORT[m] for m in others) + " |")
+        out("|---|" + "---|" * len(others))
+        for c in FA_AWARE:
+            cells = []
+            for m in others:
+                both = [p for p in large if solved(FA.get((ref, p, c))) and solved(FA.get((m, p, c)))]
+                if not both:
+                    cells.append("–")
+                    continue
+                ratio = gmean([max(fnum(FA[(m, p, c)]["search_s"]) or 0, 1e-3)
+                               / max(fnum(FA[(ref, p, c)]["search_s"]) or 0, 1e-3) for p in both])
+                cells.append(f"{ratio:.2f}x (n={len(both)})")
+            if any(x != "–" for x in cells):
+                out(f"| {c} | " + " | ".join(cells) + " |")
     return 0
 
 
