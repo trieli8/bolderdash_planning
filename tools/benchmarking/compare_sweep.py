@@ -18,7 +18,9 @@ would have under the classic machine's effective limit.
 Expansions are not the same unit on both sides: classic search expands every
 intermediate physics state, FA search only the states where the agent moves
 (forced actions are applied inside one expansion). "evaluated" counts every
-state FA reaches, forced intermediate states included.
+state FA registers: in the original fork that includes every forced
+intermediate state, in the fixpoint build (claude/lazy-forced-fixpoints) only
+the decision states, so there it is about expanded + 1.
 """
 from __future__ import annotations
 
@@ -199,7 +201,8 @@ def main() -> int:
         + ("Times: classic from the same-machine baseline." if tm_sel else
            "Times: classic and FA come from different machines (not comparable in absolute terms).")
         + " Classic expansions include every physics step; FA expansions are agent decision states only, "
-          "FA evaluated includes the forced intermediate states.\n")
+          "FA evaluated counts the states the FA build registers: every forced intermediate state in the "
+          "original fork, only the decision states in the fixpoint build (claude/lazy-forced-fixpoints).\n")
     for m in models:
         lines = []
         for c in FA_AWARE:
