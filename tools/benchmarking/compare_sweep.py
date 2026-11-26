@@ -18,7 +18,9 @@ would have under the classic machine's effective limit.
 Expansions are not the same unit on both sides: classic search expands every
 intermediate physics state, FA search only the states where the agent moves
 (forced actions are applied inside one expansion). "evaluated" counts every
-state FA reaches, forced intermediate states included.
+state FA registers: in the original fork that includes every forced
+intermediate state, in the fixpoint build (claude/lazy-forced-fixpoints) only
+the decision states, so there it is about expanded + 1.
 """
 from __future__ import annotations
 
@@ -32,8 +34,7 @@ from analyze_sweep import (EXHAUSTED, MODELS, OPT_CFGS, SAT_CFGS, SET_LABEL, SET
                            fmt_n, fmt_t, fnum, gmean, load, short_problem)
 
 ROOT = Path(__file__).resolve().parents[2]
-FA_AWARE = ["gbfs-ff", "gbfs-add", "gbfs-cea", "gbfs-cg", "wastar3-ff", "lama-first",
-            "lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb"]
+from fd_sweep import FA_AWARE  # noqa: E402  (the configs fd_sweep --fa runs)
 
 
 def parse_sel(s: str):
@@ -83,9 +84,10 @@ def main() -> int:
     tm_sel = parse_sel(opts["--timing"]) if "--timing" in opts else None
     speed = float(opts["--speed"]) if "--speed" in opts else None
     limit = 300 / speed if speed else None
-    rows = load(d)
-    FA, CL = select(rows, fa_sel), select(rows, cl_sel)
-    TM = select(rows, tm_sel) if tm_sel else CL
+    # load each side with its own host filter: load() keeps one row per (variant, model, problem,
+    # config) across hosts, so filtering hosts after a joint load would drop that host's failures
+    FA, CL = select(load(d, fa_sel[1]), fa_sel), select(load(d, cl_sel[1]), cl_sel)
+    TM = select(load(d, tm_sel[1]), tm_sel) if tm_sel else CL
     if not FA or not CL:
         print(f"no rows for {label(fa_sel) if not FA else label(cl_sel)}")
         return 1
@@ -199,7 +201,8 @@ def main() -> int:
         + ("Times: classic from the same-machine baseline." if tm_sel else
            "Times: classic and FA come from different machines (not comparable in absolute terms).")
         + " Classic expansions include every physics step; FA expansions are agent decision states only, "
-          "FA evaluated includes the forced intermediate states.\n")
+          "FA evaluated counts the states the FA build registers: every forced intermediate state in the "
+          "original fork, only the decision states in the fixpoint build (claude/lazy-forced-fixpoints).\n")
     for m in models:
         lines = []
         for c in FA_AWARE:
@@ -230,7 +233,7 @@ def main() -> int:
         + " | cost = known optimum | cost ≠ |")
     out("|---|---|" + "---|" * (len([s for s in SETS if s in probs]) + 2))
     for m in models:
-        for c in ("lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb"):
+        for c in [c for c in FA_AWARE if c in OPT_CFGS]:
             cells = [cov_cell(FA, m, c, [p for p in probs[s] if p not in nop]) for s in SETS if s in probs]
             if not any(cells):
                 continue

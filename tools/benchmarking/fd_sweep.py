@@ -42,6 +42,8 @@ Examples:
   python3 tools/benchmarking/fd_sweep.py --fd planners/fast-downward --fa --groups A,B,C
   python3 tools/benchmarking/fd_sweep.py --fd planners/fast-downward --groups A,B,C \
       --configs gbfs-ff,gbfs-add,gbfs-cea,gbfs-cg,wastar3-ff,lama-first,lazy-astar-blind,lazy-astar-hmax,lazy-astar-hmax-tb
+  # the same FA sweep with another build of the fork, kept apart as variant inv0+fa+fixpt
+  python3 tools/benchmarking/fd_sweep.py --fd /path/to/fd-fixpoint --fa --tag fixpt --groups A,B,C
 
 --fd is a Fast Downward checkout with a release build (./build.py). Without
 --fd, upstream release-24.06.1 is cloned and built into ~/.cache/fd_sweep.
@@ -107,6 +109,19 @@ SMALL = [
 OTHER_LEVELS = ["02", "03", "06", "07", "08", "09", "11", "13", "14"]
 
 SAT, OPT = "satisficing", "optimal"
+MS = ("merge_and_shrink(shrink_strategy=shrink_bisimulation(greedy=false),"
+      "merge_strategy=merge_sccs(order_of_sccs=topological,merge_selector="
+      "score_based_filtering(scoring_functions=[goal_relevance(),dfp(),total_order()])),"
+      "label_reduction=exact(before_shrinking=true,before_merging=false),"
+      "max_states=50000,threshold_before_merge=1,main_loop_max_time=60)")
+LMCP = "landmark_cost_partitioning(lm_rhw())"
+
+
+def lazy_astar(h: str) -> list[str]:
+    """Lazy A*: f = g + h, f ties broken on h as astar() does, closed states reopened."""
+    return ["--search", f"let(h, {h}, lazy(tiebreaking([sum([g(), h]), h]), reopen_closed=true))"]
+
+
 CONFIGS = {
     "gbfs-ff": (SAT, ["--search", "lazy_greedy([ff()], preferred=[ff()])"]),
     "eager-gbfs-ff": (SAT, ["--search", "eager_greedy([ff()], preferred=[ff()])"]),
@@ -117,22 +132,23 @@ CONFIGS = {
     "lama-first": (SAT, ["--alias", "lama-first"]),
     "astar-blind": (OPT, ["--search", "astar(blind())"]),
     "astar-hmax": (OPT, ["--search", "astar(hmax())"]),
-    "astar-lmcp": (OPT, ["--search", "astar(landmark_cost_partitioning(lm_rhw()))"]),
-    "astar-ms": (OPT, ["--search",
-                       "astar(merge_and_shrink(shrink_strategy=shrink_bisimulation(greedy=false),"
-                       "merge_strategy=merge_sccs(order_of_sccs=topological,merge_selector="
-                       "score_based_filtering(scoring_functions=[goal_relevance(),dfp(),total_order()])),"
-                       "label_reduction=exact(before_shrinking=true,before_merging=false),"
-                       "max_states=50000,threshold_before_merge=1,main_loop_max_time=60))"]),
+    "astar-lmcp": (OPT, ["--search", f"astar({LMCP})"]),
+    "astar-ms": (OPT, ["--search", f"astar({MS})"]),
     "lazy-astar-blind": (OPT, ["--search", "lazy_wastar([blind()], w=1)"]),
     "lazy-astar-hmax": (OPT, ["--search", "lazy_wastar([hmax()], w=1)"]),
     # lazy A* that breaks f ties on h like astar(); lazy_wastar breaks them FIFO and sweeps the whole
     # f = C* plateau (FA scanner_combined, 20x38, cost 55: 74 expansions / 1 s vs timeout)
-    "lazy-astar-hmax-tb": (OPT, ["--search", "let(h, hmax(), lazy(tiebreaking([sum([g(), h]), h]), reopen_closed=true))"]),
+    "lazy-astar-hmax-tb": (OPT, lazy_astar("hmax()")),
+    # Under FA the landmark heuristic is only told about the move, not the forced steps inside it, so
+    # a landmark that holds only inside a forced chain is never marked reached; that can overestimate.
+    # Check its plan costs against the known optima before trusting it as optimal.
+    "lazy-astar-lmcp": (OPT, lazy_astar(LMCP)),
+    "lazy-astar-ms": (OPT, lazy_astar(MS)),
 }
 # configs whose search is LazySearch, the only one that applies __FORCED__ actions in the fork
 FA_AWARE = ["gbfs-ff", "gbfs-add", "gbfs-cea", "gbfs-cg", "wastar3-ff", "lama-first",
-            "lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb"]
+            "lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb", "lazy-astar-lmcp", "lazy-astar-ms"]
+MS_CONFIGS = {"astar-ms", "lazy-astar-ms"}
 
 # FD's driver cannot limit memory on macOS; watch the RSS there instead
 WATCHDOG = sys.platform == "darwin"
@@ -173,7 +189,7 @@ def jobs(groups: list[str], fa: bool = False) -> list[tuple[str, str, str, str, 
     else:
         # merge-and-shrink needs its full 60 s construction budget even on 5x5 levels and is
         # no better than blind there, so it only runs on the small levels
-        cfgs = lambda s: [c for c in CONFIGS if s == "small" or c != "astar-ms"]  # noqa: E731
+        cfgs = lambda s: [c for c in CONFIGS if s == "small" or c not in MS_CONFIGS]  # noqa: E731
     out = []
     if "A" in groups:
         out += [("A", "scanner_combined", s, p, cfgs(s)) for s, p in probs]
@@ -434,6 +450,9 @@ def main() -> int:
     ap.add_argument("--mem", default="3G", help="memory limit per translate/search process")
     ap.add_argument("--translator-default", action="store_true", help="keep FD's invariant synthesis")
     ap.add_argument("--fa", action="store_true", help="use the domain_FA_* files (needs the forced-action fork)")
+    ap.add_argument("--tag", default="",
+                    help="label for a different planner build: results go to results_<host>[_fa]_<tag>.csv, "
+                         "which analyze_sweep reads as variant <translator>[+fa]+<tag>")
     ap.add_argument("--out", type=Path, default=ROOT / "tools/benchmarking/sweep_results")
     ap.add_argument("--host", default=socket.gethostname(),
                     help="machine label for the CSV / host file names (default: hostname)")
@@ -462,7 +481,10 @@ def main() -> int:
     fd = ensure_fd(a.fd)
     a.out.mkdir(parents=True, exist_ok=True)
     host = a.host
-    csv_path = a.out / f"results_{host}{'_fa' if a.fa else ''}{'_default' if a.translator_default else ''}.csv"
+    if a.tag and not a.tag.isalnum():
+        sys.exit("--tag must be letters and digits only")
+    csv_path = a.out / (f"results_{host}{'_fa' if a.fa else ''}{'_default' if a.translator_default else ''}"
+                        f"{'_' + a.tag if a.tag else ''}.csv")
     done = set()
     if csv_path.exists():
         for r in csv.DictReader(csv_path.open()):

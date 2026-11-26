@@ -1,0 +1,6 @@
+host=vm
+cpus=4
+ram_gb=16
+cpu=Intel(R) Xeon(R) Processor @ 2.10GHz (all jobs; the container restarted three times, 2026-11-25 ~16:30 and ~19:00 UTC and 2026-11-26 ~04:25 UTC, and the run was resumed on the same CPU type and kernel each time; jobs cut off by a restart were rerun in full)
+platform=Linux-6.18.44-fc-v880-x86_64-with-glibc2.39
+run[results_vm.csv]=jobs=4 timeout=300s mem=3G mem_limit=rlimit (FD driver) fd=downward@1eef26b FD_STATE_DUMP=0 domains=a1a50ba

@@ -6,7 +6,7 @@ tools/benchmarking/sweep_results/), so CSVs from several machines are merged.
 If the same (model, problem, config, variant) was run on more than one host,
 a solved row wins over an unsolved one and the first solved row is kept.
 
-  python3 tools/benchmarking/analyze_sweep.py [sweep_dir] [--variant=inv0|default|inv0+fa] [--hosts=h1,h2] > report.md
+  python3 tools/benchmarking/analyze_sweep.py [sweep_dir] [--variant=inv0|default|inv0+fa|inv0+fa+<tag>] [--hosts=h1,h2] > report.md
 
 --hosts keeps only the rows from those hosts (e.g. to compare search times
 measured on the same machine).
@@ -32,7 +32,8 @@ SHORT = {"scanner_combined": "scan-comb", "scanner_separated": "scan-sep",
          "non-scanner_combined": "orderfree-comb", "non-scanner_separated": "orderfree-sep"}
 MODELS = list(SHORT)
 SAT_CFGS = ["gbfs-ff", "eager-gbfs-ff", "gbfs-add", "gbfs-cea", "gbfs-cg", "wastar3-ff", "lama-first"]
-OPT_CFGS = ["astar-blind", "astar-hmax", "astar-lmcp", "astar-ms", "lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb"]
+OPT_CFGS = ["astar-blind", "astar-hmax", "astar-lmcp", "astar-ms", "lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb",
+            "lazy-astar-lmcp", "lazy-astar-ms"]
 CFGS = SAT_CFGS + OPT_CFGS
 SETS = ["small", "l1", "other"]
 SET_LABEL = {"small": "small (hand-made, 5x5..40x11)", "l1": "bd_level_01 20x38 (h1+h2)",
@@ -53,7 +54,9 @@ def load(d: Path, hosts=None):
         for r in csv.DictReader(f.open()):
             if hosts and r["host"] not in hosts:
                 continue
-            r["_variant"] = (r.get("translator") or "inv0") + ("+fa" if "_fa" in f.stem else "")
+            flags = f.stem.split("_")[2:]  # results_<host>[_fa][_default][_<tag>]
+            r["_variant"] = ((r.get("translator") or "inv0") + ("+fa" if "fa" in flags else "")
+                             + "".join("+" + t for t in flags if t not in ("fa", "default")))
             rows.append(r)
     best = {}
     for r in rows:
