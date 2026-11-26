@@ -42,6 +42,8 @@ Examples:
   python3 tools/benchmarking/fd_sweep.py --fd planners/fast-downward --fa --groups A,B,C
   python3 tools/benchmarking/fd_sweep.py --fd planners/fast-downward --groups A,B,C \
       --configs gbfs-ff,gbfs-add,gbfs-cea,gbfs-cg,wastar3-ff,lama-first,lazy-astar-blind,lazy-astar-hmax,lazy-astar-hmax-tb
+  # the same FA sweep with another build of the fork, kept apart as variant inv0+fa+fixpt
+  python3 tools/benchmarking/fd_sweep.py --fd /path/to/fd-fixpoint --fa --tag fixpt --groups A,B,C
 
 --fd is a Fast Downward checkout with a release build (./build.py). Without
 --fd, upstream release-24.06.1 is cloned and built into ~/.cache/fd_sweep.
@@ -448,6 +450,9 @@ def main() -> int:
     ap.add_argument("--mem", default="3G", help="memory limit per translate/search process")
     ap.add_argument("--translator-default", action="store_true", help="keep FD's invariant synthesis")
     ap.add_argument("--fa", action="store_true", help="use the domain_FA_* files (needs the forced-action fork)")
+    ap.add_argument("--tag", default="",
+                    help="label for a different planner build: results go to results_<host>[_fa]_<tag>.csv, "
+                         "which analyze_sweep reads as variant <translator>[+fa]+<tag>")
     ap.add_argument("--out", type=Path, default=ROOT / "tools/benchmarking/sweep_results")
     ap.add_argument("--host", default=socket.gethostname(),
                     help="machine label for the CSV / host file names (default: hostname)")
@@ -476,7 +481,10 @@ def main() -> int:
     fd = ensure_fd(a.fd)
     a.out.mkdir(parents=True, exist_ok=True)
     host = a.host
-    csv_path = a.out / f"results_{host}{'_fa' if a.fa else ''}{'_default' if a.translator_default else ''}.csv"
+    if a.tag and not a.tag.isalnum():
+        sys.exit("--tag must be letters and digits only")
+    csv_path = a.out / (f"results_{host}{'_fa' if a.fa else ''}{'_default' if a.translator_default else ''}"
+                        f"{'_' + a.tag if a.tag else ''}.csv")
     done = set()
     if csv_path.exists():
         for r in csv.DictReader(csv_path.open()):
