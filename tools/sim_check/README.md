@@ -51,6 +51,20 @@ ROWSCAN_BLOCK_WIDTH=2 python3 tools/sim_check/fuzz.py \
   --domain pddl/test_domains_target/domain_classic_scanner_combined.pddl --cases 500
 ```
 
+## Multi-gem models (`multigem_check.py`)
+
+`multigem_check.py` checks a `*_multigem` domain (several target gems) against
+its single-target domain without the engine: random levels with 1-3 targets,
+random walks, the multigem model with all targets and the single-target
+model once per target (forced-action semantics, every physics interleaving
+explored). After every tick the multigem state restricted to target i must
+equal the single-target state for target i.
+
+```bash
+python3 tools/sim_check/multigem_check.py \
+  --domain pddl/test_domains_target/domain_FA_scanner_combined_multigem.pddl --cases 200
+```
+
 ## Model cost (`model_stats.py`)
 
 ```bash

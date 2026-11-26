@@ -157,6 +157,69 @@ def _generate(kind: str, level_str: str, problem_name: str, domain_name: str, ag
     raise ValueError(f"Unsupported generator kind: {kind}")
 
 
+# ---------------------------------------------------------------------------
+# multi-gem variants (domain_*_multigem.pddl, written by make_target_variants.py)
+# ---------------------------------------------------------------------------
+
+MULTIGEM_KINDS = {"rowscan", "cellscan", "orderfree"}
+UNMARK = {classic_gen.TARGET_GEM_STATIC_ID: 5, classic_gen.TARGET_GEM_FALLING_ID: 6}
+
+
+def _multigem_targets(level_text: str, ordinals: list[int]) -> tuple[str, list[tuple[int, int]]]:
+    """Return the level with every target marker turned back into a plain gem,
+    and the target positions (0-based row, col) in row-major order.
+
+    Targets are the gems marked 90/91 in the level, the gem named by a
+    `; target-gem-ordinal:` line, and the gems named by `ordinals` (row-major
+    gem ordinals, counting from 1, as in the test-problem file names)."""
+    level_str, meta = classic_gen.parse_level_text(level_text)
+    rows, cols, max_time, required, ids = classic_gen.parse_level_string(level_str)
+    gems = [i for i, cid in enumerate(ids) if classic_gen.classify_cell_id(cid) == "gem"]
+    targets = {i for i in gems if ids[i] in classic_gen.TARGET_GEM_IDS}
+    for o in ordinals + ([meta.target_gem_ordinal] if meta.target_gem_ordinal else []):
+        if not 1 <= o <= len(gems):
+            raise ValueError(f"target gem ordinal {o} is out of range for {len(gems)} gems")
+        targets.add(gems[o - 1])
+    if not targets:
+        raise ValueError("no target gems: mark them 90/91 in the level or pass --targets")
+    plain = [UNMARK.get(cid, cid) for cid in ids]
+    level = "|".join([str(rows), str(cols), str(max_time), str(required)] + [f"{c:02d}" for c in plain])
+    if meta.start_gem_ordinal:
+        level = f"; start-gem-ordinal: {meta.start_gem_ordinal}\n{level}"
+    return level, [divmod(i, cols) for i in sorted(targets)]
+
+
+def _to_multigem(pddl: str, level: str, targets: list[tuple[int, int]]) -> str:
+    """Rewrite a single-target problem for the multigem domain: one `target`
+    object per target gem, (target-gem <cell> tK) instead of the generator's own
+    (target-gem <cell>), and (collected tK) for every target in the goal."""
+    prepared = classic_gen.prepare_level(level)
+    names = [f"t{k + 1}" for k in range(len(targets))]
+    head, kw, goal = pddl.partition("(:goal")
+    if not kw or "(got-gem)" not in goal:
+        raise ValueError("generator output has no (got-gem) goal")
+    goal = goal.replace("(got-gem)", " ".join(f"(collected {n})" for n in names), 1)
+    # drop the generator's own target marker / got-gem fact
+    head = re.sub(r"^[ \t]*\((?:got-gem|target-gem [^()\s]+)\)[ \t]*\n", "", head, flags=re.MULTILINE)
+    head = re.sub(r"\((?:got-gem|target-gem [^()\s]+)\)", "", head)
+    init = []
+    for n, (r, c) in zip(names, targets):
+        if (r, c) == prepared.agent_pos:  # the agent starts on it (start-gem levels)
+            init.append(f"(collected {n})")
+            continue
+        if classic_gen.classify_cell_id(prepared.cell_ids[r * prepared.cols + c]) != "gem":
+            raise ValueError(f"target {n} at row {r}, column {c} is not a gem")
+        cell = f"c_{r + 1}_{c + 1}"  # every generator pads the level by one cell
+        if not re.search(rf"\(gem {cell}\)", head):
+            raise ValueError(f"target {n}: no (gem {cell}) in the generated problem")
+        init.append(f"(target-gem {cell} {n})")
+    if "(:objects\n" not in head or "(:init\n" not in head:
+        raise ValueError("unexpected generator output layout")
+    head = head.replace("(:objects\n", f"(:objects\n    {' '.join(names)} - target\n", 1)
+    head = head.replace("(:init\n", "(:init\n" + "".join(f"    {a}\n" for a in init), 1)
+    return head + kw + goal
+
+
 def main_for_domain_file(domain_filename: str) -> int:
     ap = argparse.ArgumentParser(
         description=(
@@ -168,6 +231,9 @@ def main_for_domain_file(domain_filename: str) -> int:
     ap.add_argument("-p", "--problem-name", default="", help="Problem name (default: derived from level input)")
     ap.add_argument("-d", "--domain-name", default="", help="Override domain name in the generated problem")
     ap.add_argument("-a", "--agent-name", default="player", help="Agent object name for classic generators")
+    ap.add_argument("--targets", default="",
+                    help="multigem domains: comma-separated row-major gem ordinals (from 1) to make targets, "
+                         "in addition to gems marked 90/91 in the level")
     args = ap.parse_args()
 
     domain_path = _resolve_domain_path(domain_filename)
@@ -190,7 +256,17 @@ def main_for_domain_file(domain_filename: str) -> int:
             )
 
         domain_name = args.domain_name or _extract_domain_name(domain_path)
+        multigem = _domain_declares_predicate(domain_text, "collected")
+        ordinals = [int(x) for x in args.targets.split(",") if x.strip()]
+        if multigem:
+            if kind not in MULTIGEM_KINDS:
+                raise ValueError(f"multigem problems are not supported for generator kind '{kind}'")
+            level_str, targets = _multigem_targets(level_str, ordinals)
+        elif ordinals:
+            raise ValueError("--targets needs a multigem domain (domain_*_multigem.pddl)")
         pddl = _generate(kind, level_str, args.problem_name, domain_name, args.agent_name)
+        if multigem:
+            pddl = _to_multigem(pddl, level_str, targets)
 
         # Classic generators currently emit scanner-chain init facts unconditionally.
         # Remove them when the domain variant does not declare these predicates.

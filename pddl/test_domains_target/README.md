@@ -220,6 +220,49 @@ An agent killed by a falling object does not stop the physics (it does not
 depend on `agent-alive`), so such a tick still ends in a unique state; no
 `move_*` action is applicable afterwards.
 
+## Multi-gem variants (`domain_{classic,FA}_*_multigem.pddl`)
+
+The plain variants have one target gem: `(target-gem ?c)` marks it, collecting
+it sets `(got-gem)`. The `_multigem` variants (also written by
+`python pddl/make_target_variants.py`) allow any number of targets, all of which
+must be collected:
+
+- each target is a `target` object; `(target-gem ?c ?t)` is its marker and
+  travels with its gem through every fall and roll, as the single marker does;
+- collecting the gem sets `(collected ?t)`; the goal has `(collected ?t)` for
+  every target (plus the usual `agent-alive` and end-of-tick conditions);
+- the physics are unchanged: each rule that moves or clears the marker becomes
+  a `forall` over the targets. With one target the model is the single-target
+  model with its atoms renamed.
+
+Targets are named by the level, not the domain: cells marked 90 / 91 (any
+number of them, numbered `t1, t2, ...` in row-major order), or row-major gem
+ordinals passed to the wrapper:
+
+```bash
+python pddl/test_domains_target/problem_gen_domain_FA_scanner_combined_multigem.py \
+    pddl/test_problems_multigem/n2/bd_level_01_start_gem_009_targets_005_010.txt
+python pddl/test_domains_target/problem_gen_domain_scanner_combined_multigem.py \
+    pddl/test_problems/h1/bd_level_01_start_gem_001_target_gem_005.txt --targets 3,12
+```
+
+Checks:
+
+- `tools/sim_check/multigem_check.py` runs random levels with 1-3 targets
+  and random walks through the multigem model and through the single-target
+  model once per target, and compares the states after every tick. All four
+  FA variants pass 400 / 400 cases (195 of them with 2-3 targets; levels up
+  to 8x9). The check catches a deliberately broken marker rule. Since
+  `fuzz.py` checks the single-target models against the engine, this carries
+  over to the multigem models.
+- One-target problems give the same Fast Downward search as the plain model
+  (h1 `s009 t010`, classic scanner_combined, astar(hmax()): cost 3,
+  1525 expansions on both).
+
+There is no "any k of the gems" (the game's required-gems rule) variant: a
+counter would let delete-relaxation heuristics collect the same gem again
+and again, which makes them nearly useless for optimal search.
+
 ## Performance
 
 `tools/sim_check/model_stats.py` with Fast Downward 24.06.1

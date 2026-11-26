@@ -35,9 +35,10 @@ SAT_CFGS = ["gbfs-ff", "eager-gbfs-ff", "gbfs-add", "gbfs-cea", "gbfs-cg", "wast
 OPT_CFGS = ["astar-blind", "astar-hmax", "astar-lmcp", "astar-ms", "lazy-astar-blind", "lazy-astar-hmax", "lazy-astar-hmax-tb",
             "lazy-astar-lmcp", "lazy-astar-ms"]
 CFGS = SAT_CFGS + OPT_CFGS
-SETS = ["small", "l1", "other"]
+SETS = ["small", "l1", "other", "n1", "n2", "n3"]
 SET_LABEL = {"small": "small (hand-made, 5x5..40x11)", "l1": "bd_level_01 20x38 (h1+h2)",
-             "other": "bd_levels 02..14"}
+             "other": "bd_levels 02..14", "n1": "1 target (the l1 problems)", "n2": "2 targets",
+             "n3": "3 targets"}
 EXHAUSTED = {"unsolvable", "incomplete"}
 
 
@@ -71,6 +72,9 @@ def short_problem(p: str) -> str:
     name = Path(p).stem
     for a, b in (("bd_level_", "L"), ("_start_gem_", " s"), ("_target_gem_", " t")):
         name = name.replace(a, b)
+    if "_targets_" in name:  # multi-gem problems: L01 s001 t003+016
+        head, _, ts = name.partition("_targets_")
+        name = f"{head} t{ts.replace('_', '+')}"
     if "/h1/" in p:
         name += " h1"
     elif "/h2/" in p:

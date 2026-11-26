@@ -9,6 +9,13 @@ variants in pddl/test_domains_target/, over a fixed, seeded problem set:
   other   2 target-gem problems from each of bd_levels 2, 3, 6, 7, 8, 9, 11, 13, 14
           (pddl/test_problems_save/)
 
+With --multigem the *_multigem domains (several target gems, all must be
+collected) run instead, on:
+
+  n1      the 24 l1 problems (one target: the same task as the l1 runs)
+  n2      the same problems with one more target  (pddl/test_problems_multigem/n2)
+  n3      ... with two more targets               (pddl/test_problems_multigem/n3)
+
 Each job is one (model, problem): the problem is generated and translated once,
 then every configuration of the job runs on the same output.sas with its own
 search time / memory limit, so translation time is reported separately.
@@ -36,6 +43,8 @@ Examples:
   python3 tools/benchmarking/fd_sweep.py --fd ~/downward --groups B --shard 0/3
   python3 tools/benchmarking/fd_sweep.py --fd ~/downward --groups B --shard 1/3
   python3 tools/benchmarking/fd_sweep.py --fd ~/downward --groups B --shard 2/3
+  # multi-gem problems, FA, on the scalable models
+  python3 tools/benchmarking/fd_sweep.py --fd /path/to/fd-fork --fa --multigem --groups A,C
   # list jobs without running them
   python3 tools/benchmarking/fd_sweep.py --groups A,B,C --dry-run
   # forced-action sweep, and a classic baseline with the same (lazy) configs on the same machine
@@ -164,8 +173,14 @@ EXIT = {0: "solved", 1: "solved", 2: "solved", 3: "solved", 10: "unsolvable", 11
         34: "unsupported"}
 
 
-def problems() -> list[tuple[str, str]]:
+def problems(multigem: bool = False) -> list[tuple[str, str]]:
     """Deterministic (set, relative path) list."""
+    if multigem:
+        out = [("n1", p) for s, p in problems() if s == "l1"]
+        for n in ("n2", "n3"):
+            out += [(n, str(f.relative_to(ROOT)))
+                    for f in sorted((ROOT / "pddl/test_problems_multigem" / n).glob("*.txt"))]
+        return out
     out = [("small", p) for p in SMALL]
     for half in ("h1", "h2"):
         files = sorted((ROOT / "pddl/test_problems" / half).glob("*.txt"))
@@ -179,9 +194,9 @@ def problems() -> list[tuple[str, str]]:
     return out
 
 
-def jobs(groups: list[str], fa: bool = False) -> list[tuple[str, str, str, str, list[str]]]:
+def jobs(groups: list[str], fa: bool = False, multigem: bool = False) -> list[tuple[str, str, str, str, list[str]]]:
     """(group, model, set, problem, configs)."""
-    probs = problems()
+    probs = problems(multigem)
     large = [p for p in probs if p[0] != "small"]
     if fa:
         # only the lazy searches apply forced actions; the rest would just repeat the classic runs
@@ -329,9 +344,10 @@ def run_job(job, fd: Path, args, done: set) -> list[dict]:
     if not cfgs:
         return []
     host = args.host
-    domain_stem = f"domain_{'FA' if args.fa else 'classic'}_{model}"
+    mg = "_multigem" if args.multigem else ""
+    domain_stem = f"domain_{'FA' if args.fa else 'classic'}_{model}{mg}"
     domain = DOMAINS / f"{domain_stem}.pddl"
-    gen = DOMAINS / f"problem_gen_domain_{'FA_' if args.fa else ''}{model}.py"
+    gen = DOMAINS / f"problem_gen_domain_{'FA_' if args.fa else ''}{model}{mg}.py"
     base = {"host": host, "group": group, "model": model, "set": pset, "problem": prob,
             "translator": "default" if args.translator_default else "inv0", "fd": str(fd)}
     rows = []
@@ -453,7 +469,12 @@ def main() -> int:
     ap.add_argument("--tag", default="",
                     help="label for a different planner build: results go to results_<host>[_fa]_<tag>.csv, "
                          "which analyze_sweep reads as variant <translator>[+fa]+<tag>")
-    ap.add_argument("--out", type=Path, default=ROOT / "tools/benchmarking/sweep_results")
+    ap.add_argument("--multigem", action="store_true",
+                    help="several target gems: the *_multigem domains on the n1/n2/n3 problems; results go to "
+                         "results_<host>[_fa]_multigem.csv (variant <translator>[+fa]+multigem), "
+                         "by default in tools/benchmarking/sweep_results_multigem")
+    ap.add_argument("--out", type=Path, help="results directory (default: tools/benchmarking/sweep_results, "
+                                             "or sweep_results_multigem with --multigem)")
     ap.add_argument("--host", default=socket.gethostname(),
                     help="machine label for the CSV / host file names (default: hostname)")
     ap.add_argument("--dry-run", action="store_true")
@@ -461,7 +482,9 @@ def main() -> int:
 
     groups = [g.strip() for g in a.groups.split(",") if g.strip()]
     si, sn = (int(x) for x in a.shard.split("/"))
-    all_jobs = jobs(groups, a.fa)
+    if a.out is None:
+        a.out = ROOT / "tools/benchmarking" / ("sweep_results_multigem" if a.multigem else "sweep_results")
+    all_jobs = jobs(groups, a.fa, a.multigem)
     if a.configs:
         keep = [c.strip() for c in a.configs.split(",") if c.strip()]
         unknown = [c for c in keep if c not in CONFIGS]
@@ -484,7 +507,7 @@ def main() -> int:
     if a.tag and not a.tag.isalnum():
         sys.exit("--tag must be letters and digits only")
     csv_path = a.out / (f"results_{host}{'_fa' if a.fa else ''}{'_default' if a.translator_default else ''}"
-                        f"{'_' + a.tag if a.tag else ''}.csv")
+                        f"{'_multigem' if a.multigem else ''}{'_' + a.tag if a.tag else ''}.csv")
     done = set()
     if csv_path.exists():
         for r in csv.DictReader(csv_path.open()):
