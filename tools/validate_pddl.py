@@ -120,8 +120,6 @@ def read_direction_plan(plan_path: Path) -> List[str]:
         mapped = _DIRECTION_ALIASES.get(token)
         if not mapped:
             raise ValueError(f"Unrecognized direction token '{token}' in {plan_path}")
-        if mapped == "noop":
-            raise ValueError("Direction 'noop' is not supported by the PDDL domain.")
         directions.append(mapped)
     if not directions:
         raise ValueError(f"No usable actions found in plan: {plan_path}")
@@ -445,6 +443,8 @@ def op_direction(op: SASOp) -> Optional[str]:
     name = op.name_tokens[0].lower()
     if not name.startswith("move"):
         return None
+    if name == "move_noop":
+        return "noop"
     if len(op.name_tokens) < 4:
         return None
     return _dir_from_coords(op.name_tokens[2], op.name_tokens[3])
@@ -608,8 +608,12 @@ def cells_from_atoms(atoms: Iterable[str]) -> Tuple[
         r = int(m.group(1)); c = int(m.group(2))
         max_r = max(max_r, r); max_c = max(max_c, c)
 
-    cols = max_c if max_c >= 0 else 0
-    rows = max_r if max_r >= 0 else 0
+    # PDDL problems are padded by one border cell on every side.  The largest
+    # coordinate is therefore rows + 1 / cols + 1, not the board dimension.
+    # Using it directly shifted every extracted state and retained the bottom
+    # and right borders as real cells.
+    cols = max_c - 1 if max_c >= 1 else 0
+    rows = max_r - 1 if max_r >= 1 else 0
 
     for atom in atoms:
         lower = atom.lower()
@@ -989,6 +993,10 @@ def build_pddl_trace(
     static_bricks: Optional[Set[int]] = None,
     static_dirt: Optional[Set[int]] = None,
 ) -> List[Tuple[int, Set[int], Set[int], Set[int], Set[int], Set[int], Set[int]]]:
+    def tick_complete(atoms: Iterable[str]) -> bool:
+        """Return true when a scanner model is ready for the next input."""
+        return any("scan-at(scan_done)" in atom.lower() for atom in atoms)
+
     op_map = build_op_map(ops)
     state = list(init_state)
     pddl_trace: List[Tuple[int, Set[int], Set[int], Set[int], Set[int], Set[int], Set[int]]] = []
@@ -999,6 +1007,7 @@ def build_pddl_trace(
     if static_dirt:
         dirt |= static_dirt
     pddl_trace.append((agent, gems, stones, dirt, brick, falling_gems, falling_stones))
+    was_tick_complete = tick_complete(atoms)
     op = None
 
     for (name, args_list) in plan_actions:
@@ -1013,10 +1022,12 @@ def build_pddl_trace(
             brick |= static_bricks
         if static_dirt:
             dirt |= static_dirt
-        if "__forced__end_tick" == op.name_tokens[0]:
+        now_tick_complete = tick_complete(atoms)
+        if now_tick_complete and not was_tick_complete:
             pddl_trace.append((agent, gems, stones, dirt, brick, falling_gems, falling_stones))
+        was_tick_complete = now_tick_complete
 
-    if op and "__forced__end_tick" != op.name_tokens[0]:
+    if op and not was_tick_complete:
         agent, gems, stones, dirt, brick, falling_gems, falling_stones, _, _ = cells_from_atoms(atoms)
         if static_bricks:
             brick |= static_bricks
