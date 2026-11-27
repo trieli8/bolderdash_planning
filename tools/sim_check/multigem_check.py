@@ -12,6 +12,10 @@ single-target state for target i: the other targets' atoms are dropped,
 fuzz.py checks the single-target models against the stonesngems engine, so a
 pass here carries that check over to the multigem models.
 
+With a *_gemcount domain (any N gems, counter gems_0 -> gems_N), the partner is
+the *_multigem domain with every gem marked as a target: after every tick the
+boards must agree and the counter must equal min(N, gems collected).
+
   python3 tools/sim_check/multigem_check.py \\
       --domain pddl/test_domains_target/domain_FA_scanner_combined_multigem.pddl --cases 200
 """
@@ -20,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -119,9 +124,92 @@ def run_case(rng, multi_dom: str, single_dom: str, gen_multi, gen_single, args):
     return "pass", f"{collected}/{k} collected", k
 
 
+def run_case_gemcount(rng, count_dom: str, multi_dom: str, count_gen: Path, gen_multi, args):
+    while True:
+        lvl = random_level(rng, args.max_rows, args.max_cols)
+        cells = [UNMARK.get(c, c) for c in lvl.cells]
+        gems = [i for i, c in enumerate(cells) if c in (GEM, GEM_F)]
+        if gems:
+            break
+    n = rng.randint(1, len(gems))
+    plain = Level(lvl.rows, lvl.cols, cells).text()
+    allmarked = Level(lvl.rows, lvl.cols, [MARK[c] if i in gems else c for i, c in enumerate(cells)]).text()
+    proc = subprocess.run([sys.executable, str(count_gen), plain, "-p", "gc", "--collect-gems", str(n)],
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        return "skip", f"gemcount generator: {proc.stderr.strip()}", n
+    cnt = load_task(count_dom, proc.stdout)
+    multi = load_task(multi_dom, gen_multi(allmarked))
+    rc = PddlRunner(cnt, lvl.rows, lvl.cols, args.max_explore)
+    rm = PddlRunner(multi, lvl.rows, lvl.cols, args.max_explore)
+    goal_atoms = {"target-gem", "collected", "got-gem", "gems-collected"}
+
+    def board(task, state):
+        return frozenset(a for a in atoms(task, state) if a[0] not in goal_atoms)
+
+    def counter(state):
+        vals = [int(a[1].split("_")[1]) for a in atoms(cnt, state) if a[0] == "gems-collected"]
+        return vals[0] if len(vals) == 1 else None
+
+    sc, e1 = settle(rc, cnt.init_state)
+    sm, e2 = settle(rm, multi.init_state)
+    if e1 or e2:
+        return "skip", f"init: {e1 or e2}", n
+    walk = random_walk(rng, args.walk)
+    for tick, ch in enumerate(["-"] + list(walk)):
+        if tick > 0:
+            if not rc.flag(sc, "agent-alive"):
+                break
+            mc, e = rc.choose_move(sc, int(ch))
+            mm, e2 = rm.choose_move(sm, int(ch))
+            if mc is None or mm is None or e or e2:
+                return "skip", f"tick {tick}: move: {e or e2}", n
+            if mc.schema != mm.schema:
+                return "fail", f"tick {tick}: move {mc.label} vs {mm.label}", n
+            sc, e = settle(rc, mc.apply(sc))
+            sm, e2 = settle(rm, mm.apply(sm))
+            if e or e2:
+                return "skip", f"tick {tick}: {e or e2}", n
+        bc, bm = board(cnt, sc), board(multi, sm)
+        if bc != bm:
+            return "fail", f"tick {tick}: board: gemcount-only {sorted(bc - bm)[:6]}, multigem-only {sorted(bm - bc)[:6]}", n
+        got = sum(a[0] == "collected" for a in atoms(multi, sm))
+        if counter(sc) != min(n, got):
+            return "fail", f"tick {tick}: counter {counter(sc)} but {got} gems collected (N={n})", n
+    done = counter(sc) == n
+    return "pass", ("goal reached" if done else "goal not reached"), n
+
+
+def main_gemcount(args) -> int:
+    multi_path = args.domain.with_name(args.domain.name.replace("_gemcount", "_multigem"))
+    count_gen = None
+    stem = args.domain.stem
+    for cand in (f"problem_gen_{stem.replace('domain_classic_', 'domain_')}.py", f"problem_gen_{stem}.py"):
+        if (args.domain.parent / cand).exists():
+            count_gen = (args.domain.parent / cand).resolve()
+            break
+    if count_gen is None:
+        sys.exit(f"no generator for {args.domain}")
+    count_dom, multi_dom = args.domain.read_text(), multi_path.read_text()
+    gen_multi = load_generator(multi_path)
+    rng = random.Random(args.seed)
+    counts = {"pass": 0, "fail": 0, "skip": 0}
+    reached = 0
+    t0 = time.time()
+    for case in range(args.cases):
+        res, detail, n = run_case_gemcount(rng, count_dom, multi_dom, count_gen, gen_multi, args)
+        counts[res] += 1
+        reached += res == "pass" and detail == "goal reached"
+        if res != "pass":
+            print(f"case {case}: {res}: {detail}", flush=True)
+    print(f"{args.domain.name} vs {multi_path.name} (all gems targets): {counts['pass']} pass, {counts['fail']} fail, "
+          f"{counts['skip']} skipped of {args.cases} ({time.time() - t0:.0f}s); {reached} passes reached N gems")
+    return 1 if counts["fail"] else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--domain", required=True, type=Path, help="a domain_*_multigem.pddl file")
+    ap.add_argument("--domain", required=True, type=Path, help="a domain_*_multigem.pddl or *_gemcount.pddl file")
     ap.add_argument("--cases", type=int, default=200)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--max-rows", type=int, default=6)
@@ -130,8 +218,10 @@ def main() -> int:
     ap.add_argument("--walk", type=int, default=25)
     ap.add_argument("--max-explore", type=int, default=20000)
     args = ap.parse_args()
+    if "_gemcount" in args.domain.stem:
+        return main_gemcount(args)
     if "_multigem" not in args.domain.stem:
-        sys.exit("--domain must be a *_multigem.pddl domain")
+        sys.exit("--domain must be a *_multigem.pddl or *_gemcount.pddl domain")
     single_path = args.domain.with_name(args.domain.name.replace("_multigem", ""))
     multi_dom, single_dom = args.domain.read_text(), single_path.read_text()
     gen_multi, gen_single = load_generator(args.domain), load_generator(single_path)

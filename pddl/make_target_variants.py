@@ -79,9 +79,38 @@ def multigem(text: str) -> str:
     return out
 
 
-def build(text: str, forced: bool, multi: bool = False) -> str:
+def gemcount(text: str) -> str:
+    """Any-n-gems goal, as on main (85adeaa): a gem-count counter gems_0 -> ... ->
+    gems_n that move_into_gem steps (gems_n loops to itself), goal
+    (gems-collected gems_n).  The target-gem atoms stay, unused."""
+    start = text.index("(:action move_into_gem")
+    end = text.index("(:action", start + 1)
+    block = text[start:end]
+    for pat, rep in (
+        (r"(:parameters \([^)]*)\)", r"\1 ?n ?m - gem-count)"),
+        (r":precondition \(and\n", ":precondition (and\n      (gems-collected ?n) (gem-count-next ?n ?m)\n"),
+        (r":effect \(and\n", ":effect (and\n      (not (gems-collected ?n)) (gems-collected ?m)\n"),
+    ):
+        block, k = re.subn(pat, rep, block, count=1)
+        if k != 1:
+            raise SystemExit(f"gemcount: no match for {pat} in move_into_gem")
+    out = text[:start] + block + text[end:]
+    out, k1 = re.subn(r"\(:types\s*\n", "(:types\n    gem-count - object\n", out, count=1)
+    out, k2 = re.subn(r"^(\s*)\(got-gem\)(.*)$",
+                      r"\1(got-gem)\2\n\1(gems-collected ?n - gem-count)    ; gems collected so far (exactly one true)"
+                      r"\n\1(gem-count-next ?n ?m - gem-count) ; static successor; gems_n -> gems_n (saturates)",
+                      out, count=1, flags=re.MULTILINE)
+    out, k3 = re.subn(r"\(define \(domain ([A-Za-z0-9_\-]+)\)", r"(define (domain \1-gemcount)", out, count=1)
+    if not (k1 and k2 and k3):
+        raise SystemExit("gemcount: types / predicates / domain name not found")
+    return out
+
+
+def build(text: str, forced: bool, multi: bool = False, count: bool = False) -> str:
     if multi:
         text = multigem(text)
+    if count:
+        text = gemcount(text)
     if not forced:
         return text
     # every action that is not an agent move_* action is physics
@@ -91,7 +120,7 @@ def build(text: str, forced: bool, multi: bool = False) -> str:
 def main() -> None:
     for source, cell in SOURCES.items():
         body = (HERE / source).read_text(encoding="utf-8")
-        for suffix, multi in (("", False), ("_multigem", True)):
+        for suffix, multi, count in (("", False, False), ("_multigem", True, False), ("_gemcount", False, True)):
             for prefix, variant, forced in (("classic", f"domain_{cell}{suffix}.pddl", False),
                                             ("FA", f"domain_FA_{cell}{suffix}.pddl", True)):
                 header = (
@@ -101,10 +130,12 @@ def main() -> None:
                     + ("; multigem: target gems are `target` objects, (target-gem ?c ?t) travels with\n"
                        ";   the gem, collecting it sets (collected ?t); comments below describe the\n"
                        ";   single-target source (target-gem ?c) / (got-gem)\n" if multi else "")
+                    + ("; gemcount: goal (gems-collected gems_n) = any n gems; move_into_gem steps the\n"
+                       ";   counter gems_0 -> ... -> gems_n (saturating), as on main (85adeaa)\n" if count else "")
                     + "; regenerate with: python pddl/make_target_variants.py\n"
                 )
                 out = OUT_DIR / f"domain_{prefix}_{cell}{suffix}.pddl"
-                out.write_text(header + build(body, forced, multi), encoding="utf-8")
+                out.write_text(header + build(body, forced, multi, count), encoding="utf-8")
                 print(f"wrote {out}")
 
 

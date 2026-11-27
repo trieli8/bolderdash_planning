@@ -1,0 +1,9 @@
+host,level,model,fa,n,encoding,config,status,plan_cost,h_init,last_f,expanded,search_s,wall_s,translate_s,operators,peak_mem_kb,targets,fd,domains
+vm,level.txt,scanner_combined,0,1,count,sat,solved,8,8,,1896,7.976479,9.38,21.61,20897,101508,,downward@1eef26b,98d93c0 + local changes
+vm,level.txt,scanner_combined,0,1,named,sat,solved,8,8,,1896,6.855534,8.08,22.59,18356,82152,1,downward@1eef26b,98d93c0 + local changes
+vm,level.txt,scanner_combined,0,1,count,astar-hmax,solved,8,8,8,1897,4.365029,4.97,21.61,20897,77452,,downward@1eef26b,98d93c0 + local changes
+vm,level.txt,scanner_combined,0,1,named,astar-hmax,solved,8,8,8,1897,3.568543,4.37,22.59,18356,63036,1,downward@1eef26b,98d93c0 + local changes
+vm,level.txt,scanner_combined,0,2,count,sat,solved,28,9,,2978,14.479206,15.69,22.59,23438,110372,,downward@1eef26b,98d93c0 + local changes
+vm,level.txt,scanner_combined,0,2,named,sat,solved,28,36,,2978,11.630256,12.99,25.8,18356,84248,1+2,downward@1eef26b,98d93c0 + local changes
+vm,level.txt,scanner_combined,0,2,count,astar-hmax,timeout,,9,13,,,241.89,22.59,23438,151192,,downward@1eef26b,98d93c0 + local changes
+vm,level.txt,scanner_combined,0,2,named,astar-hmax,solved,26,24,26,22747,51.971124,53.19,25.8,18356,77392,1+2,downward@1eef26b,98d93c0 + local changes

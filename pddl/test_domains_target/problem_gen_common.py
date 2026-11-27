@@ -220,6 +220,50 @@ def _to_multigem(pddl: str, level: str, targets: list[tuple[int, int]]) -> str:
     return head + kw + goal
 
 
+def _plain_level(level_text: str) -> str:
+    """The level with every target marker turned back into a plain gem (keeps a start-gem line)."""
+    level_str, meta = classic_gen.parse_level_text(level_text)
+    rows, cols, max_time, required, ids = classic_gen.parse_level_string(level_str)
+    plain = [UNMARK.get(cid, cid) for cid in ids]
+    level = "|".join([str(rows), str(cols), str(max_time), str(required)] + [f"{c:02d}" for c in plain])
+    if meta.start_gem_ordinal:
+        level = f"; start-gem-ordinal: {meta.start_gem_ordinal}\n{level}"
+    return level
+
+
+def _to_gemcount(pddl: str, level: str, collect: str) -> str:
+    """Rewrite a single-target problem for the gemcount domain (as on main, 85adeaa):
+    counter objects gems_0..gems_n, (gem-count-next gems_n gems_n), goal
+    (gems-collected gems_n); the generator's own target marker is dropped."""
+    prepared = classic_gen.prepare_level(level)
+    gems_on_map = sum(classic_gen.classify_cell_id(c) == "gem" for c in prepared.cell_ids)
+    if collect == "level":
+        n = prepared.required_gems
+        if n < 1:
+            raise ValueError(f"collect-gems=level, but the level's required_gems field is {n}")
+    else:
+        n = int(collect)
+        if n < 1:
+            raise ValueError(f"collect-gems must be at least 1, got {n}")
+    if n > gems_on_map:
+        raise ValueError(f"collect-gems={n}, but the level has only {gems_on_map} gems")
+    names = [f"gems_{i}" for i in range(n + 1)]
+    init = [f"(gems-collected {names[0]})"]
+    init += [f"(gem-count-next {a} {b})" for a, b in zip(names, names[1:])]
+    init.append(f"(gem-count-next {names[-1]} {names[-1]})")
+    head, kw, goal = pddl.partition("(:goal")
+    if not kw or "(got-gem)" not in goal:
+        raise ValueError("generator output has no (got-gem) goal")
+    goal = goal.replace("(got-gem)", f"(gems-collected {names[-1]})", 1)
+    head = re.sub(r"^[ \t]*\((?:got-gem|target-gem [^()\s]+)\)[ \t]*\n", "", head, flags=re.MULTILINE)
+    head = re.sub(r"\((?:got-gem|target-gem [^()\s]+)\)", "", head)
+    if "(:objects\n" not in head or "(:init\n" not in head:
+        raise ValueError("unexpected generator output layout")
+    head = head.replace("(:objects\n", f"(:objects\n    {' '.join(names)} - gem-count\n", 1)
+    head = head.replace("(:init\n", "(:init\n" + "".join(f"    {a}\n" for a in init), 1)
+    return head + kw + goal
+
+
 def main_for_domain_file(domain_filename: str) -> int:
     ap = argparse.ArgumentParser(
         description=(
@@ -234,6 +278,8 @@ def main_for_domain_file(domain_filename: str) -> int:
     ap.add_argument("--targets", default="",
                     help="multigem domains: comma-separated row-major gem ordinals (from 1) to make targets, "
                          "in addition to gems marked 90/91 in the level")
+    ap.add_argument("--collect-gems", default="",
+                    help="gemcount domains: goal is any N gems (N, or 'level' for the level's required_gems)")
     args = ap.parse_args()
 
     domain_path = _resolve_domain_path(domain_filename)
@@ -258,6 +304,15 @@ def main_for_domain_file(domain_filename: str) -> int:
         domain_name = args.domain_name or _extract_domain_name(domain_path)
         multigem = _domain_declares_predicate(domain_text, "collected")
         ordinals = [int(x) for x in args.targets.split(",") if x.strip()]
+        gemcount = _domain_declares_predicate(domain_text, "gems-collected")
+        if gemcount:
+            if kind not in MULTIGEM_KINDS:
+                raise ValueError(f"gemcount problems are not supported for generator kind '{kind}'")
+            if not args.collect_gems:
+                raise ValueError("gemcount domain: pass --collect-gems N|level")
+            level_str = _plain_level(level_str)
+        elif args.collect_gems:
+            raise ValueError("--collect-gems needs a gemcount domain (domain_*_gemcount.pddl)")
         if multigem:
             if kind not in MULTIGEM_KINDS:
                 raise ValueError(f"multigem problems are not supported for generator kind '{kind}'")
@@ -267,6 +322,8 @@ def main_for_domain_file(domain_filename: str) -> int:
         pddl = _generate(kind, level_str, args.problem_name, domain_name, args.agent_name)
         if multigem:
             pddl = _to_multigem(pddl, level_str, targets)
+        if gemcount:
+            pddl = _to_gemcount(pddl, level_str, args.collect_gems)
 
         # Classic generators currently emit scanner-chain init facts unconditionally.
         # Remove them when the domain variant does not declare these predicates.

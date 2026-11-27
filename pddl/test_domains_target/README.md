@@ -259,9 +259,39 @@ Checks:
   (h1 `s009 t010`, classic scanner_combined, astar(hmax()): cost 3,
   1525 expansions on both).
 
-There is no "any k of the gems" (the game's required-gems rule) variant: a
-counter would let delete-relaxation heuristics collect the same gem again
-and again, which makes them nearly useless for optimal search.
+## Any-n-gems variants (`domain_{classic,FA}_*_gemcount.pddl`)
+
+The gem-count goal of `main` (commit 85adeaa), on these encodings: a
+`gem-count` counter `gems_0 -> ... -> gems_n` that `move_into_gem` steps
+(`gems_n` loops to itself), goal `(gems-collected gems_n)`, i.e. any n gems.
+Problems come from the same wrappers with `--collect-gems N` (or `level` for
+the level's required-gems field):
+
+```bash
+python pddl/test_domains_target/problem_gen_domain_FA_scanner_combined_gemcount.py pddl/level.txt --collect-gems 3
+```
+
+`tools/sim_check/multigem_check.py --domain ..._gemcount.pddl` checks it
+against the multigem model with every gem a target: same board after every
+tick, counter = min(n, gems collected). All four FA variants pass 200 / 200.
+
+**Counter vs named targets.** With a counter, delete-relaxation heuristics
+(hmax, FF) can collect the same gem again and again: a collected gem never
+leaves the relaxed state, so hmax is about the distance to the nearest gem
+plus n - 1. Named targets make the heuristic reach every target.
+`tools/benchmarking/compare_goal_encodings.py` runs both on one level. Level 1
+(`pddl/level.txt`), classic scanner_combined, upstream FD, astar(hmax()),
+240 s:
+
+| goal | initial h | result |
+|---|---|---|
+| any 1 gem | 8 | cost 8, 1897 expansions |
+| gem 1 (named) | 8 | cost 8, 1897 expansions |
+| any 2 gems | 9 | timeout (reached f = 13) |
+| gems 1 + 2 (named; the ones the any-2 plan took) | 24 | cost 26 proved, 22.7k expansions, 52 s |
+
+The two goals are different problems (any 2 <= any particular 2), but only the
+named one gives the optimal search something to work with.
 
 ## Performance
 

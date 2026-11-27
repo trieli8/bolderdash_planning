@@ -65,6 +65,10 @@ python3 tools/sim_check/multigem_check.py \
   --domain pddl/test_domains_target/domain_FA_scanner_combined_multigem.pddl --cases 200
 ```
 
+With a `*_gemcount` domain (any n gems) it checks the counter instead: same
+board as the multigem model with every gem a target, and counter =
+min(n, gems collected) after every tick.
+
 ## Model cost (`model_stats.py`)
 
 ```bash
